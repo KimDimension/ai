@@ -24,8 +24,11 @@ service-account.json
 chroma_db/
 vector_store/
 
-# Model cache
+# Model cache (HuggingFace sentence-transformers 자동 다운로드 경로)
 .cache/
+models/
+sentence_transformers_cache/
+hub/
 
 # IDE
 .vscode/
