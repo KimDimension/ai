@@ -51,10 +51,10 @@ def _build_system_prompt(record_data: dict, common_qa: list[dict], kdigo_context
 - 긴급 신호(복통, 고열, 극심한 증상 등) 발견 시 즉시 내원을 안내하고 문진을 종료하세요.
 - 최대 {settings.MAX_TURNS}번 질문 후 마무리하세요.
 
-[응답 형식 — 반드시 JSON으로만 응답]
-정상 질문: {{"type": "question", "content": "질문 내용", "reason": "이 질문을 하는 이유"}}
-긴급 상황: {{"type": "urgent", "content": "즉시 가까운 병원 응급실을 방문하시거나 119에 연락하세요. [이유]", "reason": "긴급 판단 근거"}}
-문진 종료: {{"type": "done", "content": "오늘 문진이 완료되었습니다. 담당 의사가 기록을 확인할 예정입니다.", "reason": "종료 사유"}}"""
+[응답 형식 — 반드시 한 줄 JSON으로만 응답, 줄바꿈 없이]
+정상 질문: {{"type":"question","content":"질문(50자 이내)","reason":"근거(30자 이내)"}}
+긴급 상황: {{"type":"urgent","content":"즉시 응급실 방문 또는 119 연락 요망","reason":"근거"}}
+문진 종료: {{"type":"done","content":"문진이 완료되었습니다.","reason":"종료 사유"}}"""
 
 
 def start_conversation(
@@ -79,8 +79,7 @@ def start_conversation(
             "환자 기록과 공통질문 답변을 분석해서 가장 중요하게 확인해야 할 첫 번째 질문을 해주세요.",
             generation_config=genai.types.GenerationConfig(
                 temperature=0.4,
-                max_output_tokens=512,
-                response_mime_type="application/json",
+                max_output_tokens=1024,
             ),
         )
 
@@ -150,8 +149,7 @@ def next_turn(
             patient_answer,
             generation_config=genai.types.GenerationConfig(
                 temperature=0.4,
-                max_output_tokens=512,
-                response_mime_type="application/json",
+                max_output_tokens=1024,
             ),
         )
 
