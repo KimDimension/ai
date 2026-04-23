@@ -7,6 +7,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# ai/ 패키지로 인식되도록 서브폴더에 복사
+COPY . ./ai/
 
 CMD ["uvicorn", "ai.main:app", "--host", "0.0.0.0", "--port", "8001"]
