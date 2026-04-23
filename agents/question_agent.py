@@ -169,6 +169,8 @@ def next_turn(
 
 def _parse_response(text: str) -> dict:
     """Gemini 응답 텍스트 → dict 파싱"""
+    import re
+
     try:
         # ```json ... ``` 블록 처리
         if "```json" in text:
@@ -185,6 +187,20 @@ def _parse_response(text: str) -> dict:
 
     except json.JSONDecodeError:
         logger.warning(f"JSON 파싱 실패, 원문: {text[:100]}")
+
+        # JSON이 잘린 경우 — regex로 content 필드만 추출
+        type_match    = re.search(r'"type"\s*:\s*"(\w+)"', text)
+        content_match = re.search(r'"content"\s*:\s*"(.*?)(?:","|\"}|$)', text, re.DOTALL)
+
+        if content_match:
+            msg_type = type_match.group(1) if type_match else "question"
+            content  = content_match.group(1).replace('\\"', '"').strip()
+            return {
+                "type":    msg_type if msg_type in ("question", "urgent", "done") else "question",
+                "content": content,
+                "reason":  "JSON 부분 파싱",
+            }
+
         return {
             "type": "question",
             "content": text.strip()[:200],
