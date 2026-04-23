@@ -79,6 +79,7 @@ def generate_ai_questions(
         )
 
         text = response.text.strip()
+        logger.warning(f"[DEBUG] raw response: {repr(text)}")
         data = json.loads(text)
 
         if isinstance(data, dict) and "question_text" in data:
