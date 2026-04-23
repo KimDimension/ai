@@ -6,6 +6,7 @@
 """
 import json
 import logging
+import re
 
 import google.generativeai as genai
 
@@ -67,7 +68,7 @@ def generate_ai_questions(
 - 제외된 패턴과 유사한 질문은 만들지 마세요
 
 아래 JSON 형식으로만 응답하세요:
-{{"question_text": "질문 내용", "reason": "이 질문을 생성한 이유"}}"""
+{{"question_text": "질문 내용"}}"""
 
         response = model.generate_content(
             prompt,
@@ -79,8 +80,15 @@ def generate_ai_questions(
         )
 
         text = response.text.strip()
-        logger.warning(f"[DEBUG] raw response: {repr(text)}")
-        data = json.loads(text)
+
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            # JSON이 잘린 경우 question_text만 regex로 추출
+            match = re.search(r'"question_text"\s*:\s*"([^"]+)"', text)
+            if match:
+                return [{"question_text": match.group(1)}]
+            return []
 
         if isinstance(data, dict) and "question_text" in data:
             return [data]
