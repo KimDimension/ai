@@ -1,8 +1,9 @@
 """
-대화형 문진 에이전트
-- 환자 기록 + 공통질문 답변을 받아 첫 질문 생성
-- 환자 답변을 받아 다음 질문 생성 (멀티턴)
-- 긴급 신호 감지 시 즉시 내원 안내 후 종료
+[DEPRECATED] 대화형 문진 에이전트 — Project 2에서 재활용 예정
+- 멘토 피드백에 따라 Project 1에서는 챗봇 문진 미사용
+- 환자가 AI에게 의료 상담을 의존하는 문제 방지
+- 대신 ai_question_agent.py의 정적 예/아니오 질문 방식 사용
+- /conversation/start, /conversation/next 엔드포인트 제거됨 (main.py 참고)
 """
 import json
 import logging

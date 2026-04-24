@@ -1,8 +1,9 @@
 """
-정적 설문용 AI 맞춤 질문 생성 에이전트
-- 구 backend/app/services/ai_service.py 역할을 Gemini로 대체
-- 기록 이상 수치 기반으로 예/아니오 질문 1개 생성
+정적 설문용 AI 추천 질문 생성 에이전트
+- 환자 투석 기록 이상 수치 기반으로 예/아니오 질문 1개 생성
+- 의사 공통 질문 아래 'AI 추천 질문' 섹션에 표시됨
 - RAG(KDIGO 검색) 컨텍스트 주입 지원
+- 고령 환자 대상: 쉬운 표현, 짧은 문장, 불안 유발 표현 금지
 """
 import json
 import logging
@@ -24,7 +25,7 @@ def generate_ai_questions(
     kdigo_context: str = "",
 ) -> list[dict]:
     """
-    환자 투석 기록 기반 AI 맞춤 질문 생성 (예/아니오 설문용)
+    환자 투석 기록 기반 AI 추천 질문 생성 (예/아니오 설문용)
 
     Args:
         record_data:    환자의 오늘 투석 기록 dict
@@ -32,7 +33,7 @@ def generate_ai_questions(
         kdigo_context:  RAG로 검색한 KDIGO 관련 문단
 
     Returns:
-        [{"question_text": "...", "reason": "..."}] 형태 리스트
+        [{"question_text": "..."}] 형태 리스트
         오류 시 빈 리스트 반환
     """
     try:
@@ -48,8 +49,8 @@ def generate_ai_questions(
 {kdigo_context}
 """
 
-        prompt = f"""당신은 CAPD(복막투석) 환자를 담당하는 의료 AI 어시스턴트입니다.
-아래 오늘의 투석 기록과 이상 수치 분석을 바탕으로, 의사가 환자에게 추가로 확인해야 할 증상을 묻는 질문 1개를 생성하세요.
+        prompt = f"""당신은 CAPD(복막투석) 환자를 담당하는 의료팀의 AI 보조 도구입니다.
+아래 오늘의 투석 기록과 이상 수치 분석을 바탕으로, 의사에게 전달할 추가 정보를 수집하기 위한 질문 1개를 생성하세요.
 {kdigo_block}
 [오늘 투석 기록]
 {json.dumps(record_data, ensure_ascii=False, indent=2)}
@@ -60,12 +61,15 @@ def generate_ai_questions(
 [이미 제외된 패턴]
 {rejected_str}
 
-규칙:
+[규칙]
 - 이상 수치나 주의가 필요한 항목에 집중하세요
 - KDIGO 지침이 있으면 해당 근거를 바탕으로 질문하세요
-- 환자가 예/아니오로 답할 수 있는 구체적인 질문을 만드세요
-- 의학 전문용어보다 쉬운 한국어 표현을 사용하세요
+- 환자가 예/아니오로 답할 수 있는 질문을 만드세요
+- 대부분 고령 환자임을 감안하여 쉽고 짧은 한국어 표현을 사용하세요 (의학 전문용어 금지)
+- "심각한", "위험한", "응급" 등 불안감을 줄 수 있는 표현은 사용하지 마세요
+- 이 질문은 진단이 아니라 의사에게 상태를 전달하기 위한 정보 수집임을 염두에 두세요
 - 제외된 패턴과 유사한 질문은 만들지 마세요
+- 질문은 30자 이내로 간결하게 작성하세요
 
 아래 JSON 형식으로만 응답하세요:
 {{"question_text": "질문 내용"}}"""
@@ -73,8 +77,8 @@ def generate_ai_questions(
         response = model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(
-                temperature=0.5,
-                max_output_tokens=1024,
+                temperature=0.2,
+                max_output_tokens=256,
                 response_mime_type="application/json",
             ),
         )
@@ -91,9 +95,9 @@ def generate_ai_questions(
             return []
 
         if isinstance(data, dict) and "question_text" in data:
-            return [data]
+            return [{"question_text": data["question_text"]}]
         elif isinstance(data, list):
-            return data
+            return [{"question_text": q["question_text"]} for q in data if "question_text" in q]
 
         return []
 
