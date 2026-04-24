@@ -21,6 +21,7 @@ def generate_summary_and_triage(
     common_qa: list[dict],
     ai_survey_responses: list[dict] = None,
     conversation_messages: list[dict] = None,  # 하위 호환성 유지 (무시됨)
+    historical_context: dict = None,
 ) -> dict:
     """
     설문 완료 후 위험도 + 요약 + EMR 생성
@@ -32,6 +33,15 @@ def generate_summary_and_triage(
         ai_survey_responses:  AI 추천 질문 응답 목록
                               [{"question_text": str, "question_type": str, "answer": str}]
         conversation_messages: 하위 호환성용 (무시됨)
+        historical_context:   최근 30일 집계 데이터 (없으면 생략)
+                              {
+                                "days": int,
+                                "bp": {"avg": str, "max": str, "min": str, "trend": str},
+                                "weight": {"avg": float, "delta_7d": float, "trend": str},
+                                "uf": {"weekly_avg": list, "trend": str},
+                                "glucose": {"avg": float, "max": float},
+                                "risk_summary": {"urgent": int, "caution": int, "normal": int},
+                              }
 
     Returns:
         {
@@ -72,9 +82,28 @@ def generate_summary_and_triage(
                 lines.append(f"- [{type_label}] {item['question_text']}: {answer}")
             ai_survey_text = "\n".join(lines)
 
+        # 과거 기록 집계 블록
+        history_block = ""
+        if historical_context and historical_context.get("days", 0) >= 3:
+            h = historical_context
+            bp = h.get("bp", {})
+            wt = h.get("weight", {})
+            uf = h.get("uf", {})
+            gl = h.get("glucose", {})
+            rs = h.get("risk_summary", {})
+            uf_weekly = ", ".join(str(v) for v in uf.get("weekly_avg", [])) or "데이터 없음"
+            history_block = f"""
+[최근 {h['days']}일 추세 요약]
+- 혈압: 평균 {bp.get('avg', 'N/A')}, 최고 {bp.get('max', 'N/A')}, 최저 {bp.get('min', 'N/A')}, 추세: {bp.get('trend', 'N/A')}
+- 체중: 평균 {wt.get('avg', 'N/A')}kg, 최근 7일 변화 {wt.get('delta_7d', 'N/A')}kg, 추세: {wt.get('trend', 'N/A')}
+- UF량 주간 평균(최근→과거): {uf_weekly}, 추세: {uf.get('trend', 'N/A')}
+- 공복혈당: 평균 {gl.get('avg', 'N/A')}, 최고 {gl.get('max', 'N/A')} mg/dL
+- 위험도 이력: 긴급 {rs.get('urgent', 0)}회 / 주의 {rs.get('caution', 0)}회 / 정상 {rs.get('normal', 0)}회
+"""
+
         prompt = f"""당신은 CAPD(복막투석) 전문 의료 AI입니다.
 아래 환자 데이터를 바탕으로 위험도 분류, 의사용 요약, EMR(SOAP)을 작성하세요.
-
+{history_block}
 [오늘 투석 기록]
 {json.dumps(record_data, ensure_ascii=False, indent=2)}
 
@@ -94,6 +123,7 @@ def generate_summary_and_triage(
 요약 작성 지침:
 - 의사가 한눈에 파악할 수 있도록 2~4문장으로 핵심만 작성
 - 이상 수치와 환자 호소 증상 중심으로 작성
+- 최근 추세 요약이 있다면 오늘 수치를 추세 맥락에서 해석할 것 (예: "혈압이 2주 연속 상승 중")
 - AI 설문 응답에서 주목할 내용이 있으면 포함
 - 한국어로 작성
 

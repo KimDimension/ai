@@ -36,6 +36,7 @@ class SummaryRequest(BaseModel):
     common_qa: list[dict] = []
     ai_survey_responses: list[dict] = []        # AI 구조화 설문 응답
     conversation_messages: list[dict] = []      # 하위 호환성 유지 (무시됨)
+    historical_context: dict = {}               # 최근 30일 집계 데이터 (선택)
 
 
 class SummaryResponse(BaseModel):
@@ -71,6 +72,7 @@ def create_summary(body: SummaryRequest):
         record_data=body.record_data,
         common_qa=body.common_qa,
         ai_survey_responses=body.ai_survey_responses,
+        historical_context=body.historical_context or {},
     )
     return SummaryResponse(**result)
 
