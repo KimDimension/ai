@@ -127,31 +127,54 @@ EMR SOAP 작성:
 
 
 def _parse_summary_response(text: str) -> dict:
-    """응답 파싱"""
+    """응답 파싱 — Gemini가 문자열 값 안에 literal newline을 넣는 경우도 처리"""
+    import re
+
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0].strip()
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0].strip()
+
+    # 1차 시도: 그대로 파싱
     try:
-        if "```json" in text:
-            text = text.split("```json")[1].split("```")[0].strip()
-        elif "```" in text:
-            text = text.split("```")[1].split("```")[0].strip()
-
         data = json.loads(text)
-
-        if data.get("risk_level") not in ("normal", "caution", "urgent"):
-            data["risk_level"] = "caution"
-
-        return {
-            "risk_level": data.get("risk_level", "caution"),
-            "ai_summary": data.get("ai_summary", "요약 생성 실패"),
-            "emr_soap":   data.get("emr_soap", "EMR 생성 실패"),
-        }
-
+        return _validate_summary(data)
     except json.JSONDecodeError:
-        logger.warning(f"요약 JSON 파싱 실패: {text[:100]}")
-        return {
-            "risk_level": "caution",
-            "ai_summary": text.strip()[:500],
-            "emr_soap":   "",
-        }
+        pass
+
+    # 2차 시도: 문자열 값 안의 literal newline을 \n으로 치환
+    try:
+        fixed = re.sub(
+            r'("(?:[^"\\]|\\.)*")',
+            lambda m: m.group(0).replace('\n', '\\n').replace('\r', ''),
+            text,
+        )
+        data = json.loads(fixed)
+        return _validate_summary(data)
+    except (json.JSONDecodeError, Exception):
+        pass
+
+    # 3차 시도: regex로 각 필드 직접 추출
+    logger.warning(f"요약 JSON 파싱 실패, regex fallback 사용: {text[:80]}")
+    risk_match    = re.search(r'"risk_level"\s*:\s*"(normal|caution|urgent)"', text)
+    summary_match = re.search(r'"ai_summary"\s*:\s*"([\s\S]*?)"(?:\s*,|\s*\})', text)
+    emr_match     = re.search(r'"emr_soap"\s*:\s*"([\s\S]*?)"(?:\s*\})', text)
+
+    return {
+        "risk_level": risk_match.group(1) if risk_match else "caution",
+        "ai_summary": summary_match.group(1).replace('\\n', '\n') if summary_match else text.strip()[:500],
+        "emr_soap":   emr_match.group(1).replace('\\n', '\n') if emr_match else "",
+    }
+
+
+def _validate_summary(data: dict) -> dict:
+    if data.get("risk_level") not in ("normal", "caution", "urgent"):
+        data["risk_level"] = "caution"
+    return {
+        "risk_level": data.get("risk_level", "caution"),
+        "ai_summary": data.get("ai_summary", "요약 생성 실패"),
+        "emr_soap":   data.get("emr_soap", "EMR 생성 실패"),
+    }
 
 
 def _fallback_triage(record_data: dict) -> dict:
