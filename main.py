@@ -34,7 +34,8 @@ app.add_middleware(
 class SummaryRequest(BaseModel):
     record_data: dict
     common_qa: list[dict] = []
-    conversation_messages: list[dict] = []  # 하위 호환성 유지 (빈 리스트 허용)
+    ai_survey_responses: list[dict] = []        # AI 구조화 설문 응답
+    conversation_messages: list[dict] = []      # 하위 호환성 유지 (무시됨)
 
 
 class SummaryResponse(BaseModel):
@@ -44,13 +45,13 @@ class SummaryResponse(BaseModel):
 
 
 class AIQuestionsRequest(BaseModel):
-    """정적 설문용 AI 추천 질문 생성 (surveys.py에서 호출)"""
+    """구조화 설문용 AI 추천 질문 생성 (surveys.py에서 호출)"""
     record_data: dict
     rejected_keys: list[str] = []   # 제외할 패턴 키 목록
 
 
 class AIQuestionsResponse(BaseModel):
-    questions: list[dict]           # [{"question_text": str}]
+    questions: list[dict]           # [{"question_text", "question_type", "options", "reason"}]
 
 
 # ── 엔드포인트 ──────────────────────────────────────────────────
@@ -69,7 +70,7 @@ def create_summary(body: SummaryRequest):
     result = generate_summary_and_triage(
         record_data=body.record_data,
         common_qa=body.common_qa,
-        conversation_messages=body.conversation_messages,
+        ai_survey_responses=body.ai_survey_responses,
     )
     return SummaryResponse(**result)
 

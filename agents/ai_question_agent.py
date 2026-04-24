@@ -1,6 +1,7 @@
 """
-정적 설문용 AI 추천 질문 생성 에이전트
-- 환자 투석 기록 이상 수치 기반으로 예/아니오 질문 1개 생성
+구조화된 설문용 AI 추천 질문 생성 에이전트
+- 환자 투석 기록 이상 수치 기반으로 질문 생성
+- 질문 타입: yes_no / single_select / multi_select / short_text
 - 의사 공통 질문 아래 'AI 추천 질문' 섹션에 표시됨
 - RAG(KDIGO 검색) 컨텍스트 주입 지원
 - 고령 환자 대상: 쉬운 표현, 짧은 문장, 불안 유발 표현 금지
@@ -18,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 genai.configure(api_key=settings.GEMINI_API_KEY)
 
+# 유효한 질문 타입
+VALID_TYPES = {"yes_no", "single_select", "multi_select", "short_text"}
+
 
 def generate_ai_questions(
     record_data: dict,
@@ -25,7 +29,7 @@ def generate_ai_questions(
     kdigo_context: str = "",
 ) -> list[dict]:
     """
-    환자 투석 기록 기반 AI 추천 질문 생성 (예/아니오 설문용)
+    환자 투석 기록 기반 AI 추천 질문 생성 (구조화된 설문용)
 
     Args:
         record_data:    환자의 오늘 투석 기록 dict
@@ -33,7 +37,14 @@ def generate_ai_questions(
         kdigo_context:  RAG로 검색한 KDIGO 관련 문단
 
     Returns:
-        [{"question_text": "..."}] 형태 리스트
+        [
+            {
+                "question_text": "질문 내용",
+                "question_type": "yes_no" | "single_select" | "multi_select" | "short_text",
+                "options": ["선택지1", "선택지2", ...] or null,
+                "reason": "생성 이유"
+            }
+        ]
         오류 시 빈 리스트 반환
     """
     try:
@@ -50,7 +61,7 @@ def generate_ai_questions(
 """
 
         prompt = f"""당신은 CAPD(복막투석) 환자를 담당하는 의료팀의 AI 보조 도구입니다.
-아래 오늘의 투석 기록과 이상 수치 분석을 바탕으로, 의사에게 전달할 추가 정보를 수집하기 위한 질문 1개를 생성하세요.
+아래 오늘의 투석 기록과 이상 수치 분석을 바탕으로, 의사에게 환자 상태를 전달하기 위한 추가 질문 1개를 생성하세요.
 {kdigo_block}
 [오늘 투석 기록]
 {json.dumps(record_data, ensure_ascii=False, indent=2)}
@@ -61,24 +72,36 @@ def generate_ai_questions(
 [이미 제외된 패턴]
 {rejected_str}
 
+[질문 타입 선택 기준]
+- yes_no: 단순 유무 확인 (예: "두통이 있었나요?")
+- single_select: 여러 항목 중 하나 선택 (예: 증상 위치, 빈도)
+- multi_select: 여러 항목 중 복수 선택 (예: 동반 증상 목록)
+- short_text: 수치나 구체적 설명이 필요한 경우 (예: "소변량이 얼마나 되셨나요?")
+
 [규칙]
 - 이상 수치나 주의가 필요한 항목에 집중하세요
 - KDIGO 지침이 있으면 해당 근거를 바탕으로 질문하세요
-- 환자가 예/아니오로 답할 수 있는 질문을 만드세요
 - 대부분 고령 환자임을 감안하여 쉽고 짧은 한국어 표현을 사용하세요 (의학 전문용어 금지)
 - "심각한", "위험한", "응급" 등 불안감을 줄 수 있는 표현은 사용하지 마세요
-- 이 질문은 진단이 아니라 의사에게 상태를 전달하기 위한 정보 수집임을 염두에 두세요
+- 이 질문은 진단이 아니라 의사에게 상태를 전달하기 위한 정보 수집입니다
 - 제외된 패턴과 유사한 질문은 만들지 마세요
-- 질문은 30자 이내로 간결하게 작성하세요
+- question_text는 40자 이내로 간결하게 작성하세요
+- single_select / multi_select 타입은 반드시 options를 3~5개 제공하세요
+- yes_no / short_text 타입은 options를 null로 설정하세요
 
 아래 JSON 형식으로만 응답하세요:
-{{"question_text": "질문 내용"}}"""
+{{
+  "question_text": "질문 내용",
+  "question_type": "yes_no" | "single_select" | "multi_select" | "short_text",
+  "options": ["선택지1", "선택지2", "선택지3"] | null,
+  "reason": "이 질문을 생성한 이유 (20자 이내)"
+}}"""
 
         response = model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(
                 temperature=0.2,
-                max_output_tokens=256,
+                max_output_tokens=512,
                 response_mime_type="application/json",
             ),
         )
@@ -88,16 +111,20 @@ def generate_ai_questions(
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            # JSON이 잘린 경우 question_text만 regex로 추출
+            # JSON 파싱 실패 시 regex fallback
             match = re.search(r'"question_text"\s*:\s*"([^"]+)"', text)
             if match:
-                return [{"question_text": match.group(1)}]
+                return [{"question_text": match.group(1), "question_type": "yes_no", "options": None, "reason": ""}]
             return []
 
-        if isinstance(data, dict) and "question_text" in data:
-            return [{"question_text": data["question_text"]}]
-        elif isinstance(data, list):
-            return [{"question_text": q["question_text"]} for q in data if "question_text" in q]
+        if isinstance(data, list):
+            results = []
+            for q in data:
+                if "question_text" in q:
+                    results.append(_normalize_question(q))
+            return results
+        elif isinstance(data, dict) and "question_text" in data:
+            return [_normalize_question(data)]
 
         return []
 
@@ -107,3 +134,26 @@ def generate_ai_questions(
     except Exception as e:
         logger.warning(f"AI 질문 생성 실패: {e}")
         return []
+
+
+def _normalize_question(q: dict) -> dict:
+    """질문 dict 정규화 — 필수 필드 보정"""
+    q_type = q.get("question_type", "yes_no")
+    if q_type not in VALID_TYPES:
+        q_type = "yes_no"
+
+    options = q.get("options")
+    # yes_no / short_text는 options 불필요
+    if q_type in ("yes_no", "short_text"):
+        options = None
+    # select 타입인데 options가 없으면 yes_no로 강제 변환
+    elif q_type in ("single_select", "multi_select") and not options:
+        q_type = "yes_no"
+        options = None
+
+    return {
+        "question_text": q["question_text"],
+        "question_type": q_type,
+        "options":       json.dumps(options, ensure_ascii=False) if options else None,
+        "reason":        q.get("reason", ""),
+    }
