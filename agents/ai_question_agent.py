@@ -100,7 +100,7 @@ def generate_ai_questions(
         prompt = f"""당신은 CAPD(복막투석) 환자를 담당하는 의료팀의 AI 보조 도구입니다.
 아래 오늘의 투석 기록과 이상 수치 분석, 그리고 환자의 과거 추세를 종합하여 의사에게 환자 상태를 전달하기 위한 추가 질문을 생성하세요.
 
-⚠️ 중요: 이상 수치가 없더라도 반드시 3~5개의 질문을 생성해야 합니다. 빈 배열은 허용되지 않습니다.
+⚠️ 절대 규칙: 반드시 정확히 4개의 질문을 JSON 배열로 반환하세요. 1개나 2개는 절대 불가합니다. 4개 미만이면 오답입니다.
 {history_block}{kdigo_block}{routine_block}
 [오늘 투석 기록]
 {json.dumps(record_data, ensure_ascii=False, indent=2)}
@@ -131,7 +131,7 @@ def generate_ai_questions(
 - single_select / multi_select 타입은 반드시 options를 3~5개 제공하세요
 - yes_no / short_text 타입은 options를 null로 설정하세요
 
-아래 JSON 배열 형식으로만 응답하세요 (3~5개):
+아래 JSON 배열 형식으로만 응답하세요 (반드시 4개, 이 숫자를 지키지 않으면 오답입니다):
 [
   {{
     "question_text": "질문 내용",
@@ -145,7 +145,7 @@ def generate_ai_questions(
         response = model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(
-                temperature=0.2,
+                temperature=0.5,
                 max_output_tokens=1500,
                 response_mime_type="application/json",
             ),
