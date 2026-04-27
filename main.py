@@ -3,6 +3,7 @@ CAPD AI 서버 — FastAPI (포트 8001)
 backend 서버와 HTTP로 통신
 """
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,15 +11,26 @@ from pydantic import BaseModel
 
 from ai.agents.summary_agent import generate_summary_and_triage
 from ai.agents.ai_question_agent import generate_ai_questions
-from ai.rag.retriever import search_kdigo_context
+from ai.rag.retriever import search_kdigo_context, _get_model
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 서버 시작 시 임베딩 모델 미리 로드 (첫 요청 지연 방지)
+    logger.info("임베딩 모델 사전 로드 중...")
+    _get_model()
+    logger.info("임베딩 모델 준비 완료")
+    yield
+
 
 app = FastAPI(
     title="CAPD AI API",
     description="AI 추천 질문 생성 / 위험도 트리아지 / 종합 요약 AI 서버",
     version="2.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
