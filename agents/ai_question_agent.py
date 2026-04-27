@@ -22,6 +22,11 @@ genai.configure(api_key=settings.GEMINI_API_KEY)
 # 유효한 질문 타입
 VALID_TYPES = {"yes_no", "single_select", "multi_select", "short_text"}
 
+# 목표 질문 수 / 재시도 설정
+TARGET_COUNT = 4
+MIN_COUNT = 3
+MAX_RETRIES = 2
+
 
 def generate_ai_questions(
     record_data: dict,
@@ -51,23 +56,22 @@ def generate_ai_questions(
         ]
         오류 시 빈 리스트 반환
     """
-    try:
-        model = genai.GenerativeModel(model_name=settings.GEMINI_MODEL)
+    model = genai.GenerativeModel(model_name=settings.GEMINI_MODEL)
 
-        rejected_str = ", ".join(rejected_keys) if rejected_keys else "없음"
-        anomaly_text = summarize_anomalies_text(record_data)
+    rejected_str = ", ".join(rejected_keys) if rejected_keys else "없음"
+    anomaly_text = summarize_anomalies_text(record_data)
 
-        # 과거 추세 블록 구성 — 기록이 1개라도 있으면 주입
-        history_block = ""
-        if historical_context and historical_context.get("days", 0) >= 1:
-            h = historical_context
-            bp = h.get("bp", {})
-            wt = h.get("weight", {})
-            uf = h.get("uf", {})
-            gl = h.get("glucose", {})
-            rs = h.get("risk_summary", {})
-            uf_weekly = ", ".join(str(v) for v in uf.get("weekly_avg", [])) or "데이터 없음"
-            history_block = f"""
+    # 과거 추세 블록 구성 — 기록이 1개라도 있으면 주입
+    history_block = ""
+    if historical_context and historical_context.get("days", 0) >= 1:
+        h = historical_context
+        bp = h.get("bp", {})
+        wt = h.get("weight", {})
+        uf = h.get("uf", {})
+        gl = h.get("glucose", {})
+        rs = h.get("risk_summary", {})
+        uf_weekly = ", ".join(str(v) for v in uf.get("weekly_avg", [])) or "데이터 없음"
+        history_block = f"""
 [환자 과거 기록 추세 — {h['days']}일 기준]
 - 혈압: 평균 {bp.get('avg', 'N/A')} mmHg, 최고 {bp.get('max', 'N/A')}, 추세: {bp.get('trend', 'N/A')}
 - 체중: 평균 {wt.get('avg', 'N/A')} kg, 최근 변화 {wt.get('delta_7d', 'N/A')} kg, 추세: {wt.get('trend', 'N/A')}
@@ -77,17 +81,17 @@ def generate_ai_questions(
 ※ 오늘 수치가 이 추세와 다르게 변했다면, 그 변화를 우선적으로 질문에 반영하세요.
 """
 
-        kdigo_block = ""
-        if kdigo_context:
-            kdigo_block = f"""
+    kdigo_block = ""
+    if kdigo_context:
+        kdigo_block = f"""
 [KDIGO 관련 지침]
 {kdigo_context}
 """
 
-        # 이상 수치 없을 때: CAPD 루틴 모니터링 카테고리 힌트 주입
-        routine_block = ""
-        if anomaly_text == "이상 수치 없음":
-            routine_block = """
+    # 이상 수치 없을 때: CAPD 루틴 모니터링 카테고리 힌트 주입
+    routine_block = ""
+    if anomaly_text == "이상 수치 없음":
+        routine_block = """
 [오늘 기록에 이상 수치는 없습니다. 아래 CAPD 루틴 모니터링 카테고리 중 오늘 기록에서 더 파악이 필요한 항목을 선택해 질문을 생성하세요]
 - 복막염 초기 증상: 복통, 발열, 투석액 색 변화 여부
 - 수분 균형: 부종(발목·눈두덩이 붓기), 갈증, 호흡 불편감
@@ -97,10 +101,17 @@ def generate_ai_questions(
 - 활동량: 평소 대비 활동 변화, 운동 여부
 """
 
-        prompt = f"""당신은 CAPD(복막투석) 환자를 담당하는 의료팀의 AI 보조 도구입니다.
-아래 오늘의 투석 기록과 이상 수치 분석, 그리고 환자의 과거 추세를 종합하여 의사에게 환자 상태를 전달하기 위한 추가 질문을 생성하세요.
+    def _build_prompt(attempt: int) -> str:
+        # 재시도 시 더 강한 어조로 지시
+        retry_warning = ""
+        if attempt > 0:
+            retry_warning = f"\n🔁 재시도 {attempt}회차: 이전 응답에서 질문이 {TARGET_COUNT}개 미만이었습니다. 이번에는 반드시 JSON 배열 원소를 정확히 {TARGET_COUNT}개 작성하세요.\n"
 
-⚠️ 절대 규칙: 반드시 정확히 4개의 질문을 JSON 배열로 반환하세요. 1개나 2개는 절대 불가합니다. 4개 미만이면 오답입니다.
+        return f"""당신은 CAPD(복막투석) 환자를 담당하는 의료팀의 AI 보조 도구입니다.
+아래 오늘의 투석 기록과 이상 수치 분석, 그리고 환자의 과거 추세를 종합하여 의사에게 환자 상태를 전달하기 위한 추가 질문을 생성하세요.
+{retry_warning}
+⚠️ 절대 규칙: 반드시 정확히 {TARGET_COUNT}개의 질문 객체를 포함한 JSON 배열을 반환하세요.
+   배열 원소가 {TARGET_COUNT}개 미만이면 오답입니다. 코드블록 없이 순수 JSON만 출력하세요.
 {history_block}{kdigo_block}{routine_block}
 [오늘 투석 기록]
 {json.dumps(record_data, ensure_ascii=False, indent=2)}
@@ -131,7 +142,7 @@ def generate_ai_questions(
 - single_select / multi_select 타입은 반드시 options를 3~5개 제공하세요
 - yes_no / short_text 타입은 options를 null로 설정하세요
 
-아래 JSON 배열 형식으로만 응답하세요 (반드시 4개, 이 숫자를 지키지 않으면 오답입니다):
+아래 JSON 배열 형식으로만 응답하세요 (배열 원소 정확히 {TARGET_COUNT}개):
 [
   {{
     "question_text": "질문 내용",
@@ -142,46 +153,78 @@ def generate_ai_questions(
   ...
 ]"""
 
+    def _call_model(attempt: int) -> list[dict]:
+        """Gemini 호출 → 파싱 → 정규화된 질문 리스트 반환"""
+        # 재시도마다 temperature 소폭 상향 (다양성 증가)
+        temperature = min(0.5 + attempt * 0.15, 0.9)
+
         response = model.generate_content(
-            prompt,
+            _build_prompt(attempt),
             generation_config=genai.types.GenerationConfig(
-                temperature=0.5,
-                max_output_tokens=1500,
-                response_mime_type="application/json",
+                temperature=temperature,
+                max_output_tokens=1800,
+                # response_mime_type 제거 — constrained JSON 모드가 배열을 최소화하는 원인
             ),
         )
 
         text = response.text.strip()
 
+        # 코드블록 래퍼 제거 (```json ... ``` 또는 ``` ... ```)
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+        text = text.strip()
+
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            # JSON 파싱 실패 시 regex fallback
-            match = re.search(r'"question_text"\s*:\s*"([^"]+)"', text)
+            # JSON 배열 추출 시도
+            match = re.search(r"\[.*\]", text, re.DOTALL)
             if match:
-                return [{"question_text": match.group(1), "question_type": "yes_no", "options": None, "reason": ""}]
-            return []
+                try:
+                    data = json.loads(match.group(0))
+                except json.JSONDecodeError:
+                    logger.warning(f"[attempt={attempt}] JSON 배열 추출 파싱 실패")
+                    return []
+            else:
+                logger.warning(f"[attempt={attempt}] JSON 배열 미발견, 원문: {text[:200]}")
+                return []
 
         if isinstance(data, list):
-            results = []
-            for q in data:
-                if "question_text" in q:
-                    results.append(_normalize_question(q))
-            if not results:
-                logger.warning("AI 질문 생성 결과가 비어 있습니다 (Gemini가 빈 배열 반환)")
+            results = [_normalize_question(q) for q in data if "question_text" in q]
+            logger.info(f"[attempt={attempt}] 질문 {len(results)}개 파싱 성공")
             return results
         elif isinstance(data, dict) and "question_text" in data:
+            logger.warning(f"[attempt={attempt}] Gemini가 배열 대신 단일 객체 반환")
             return [_normalize_question(data)]
 
-        logger.warning("AI 질문 생성 결과 파싱 실패 — 예상치 못한 형식")
+        logger.warning(f"[attempt={attempt}] 예상치 못한 응답 형식")
         return []
 
-    except json.JSONDecodeError as e:
-        logger.warning(f"AI 질문 JSON 파싱 실패: {e}")
-        return []
-    except Exception as e:
-        logger.warning(f"AI 질문 생성 실패: {e}")
-        return []
+    # ── 메인 로직: 재시도 루프 ──────────────────────────────────────────
+    best: list[dict] = []
+
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            results = _call_model(attempt)
+        except Exception as e:
+            logger.warning(f"[attempt={attempt}] Gemini 호출 실패: {e}")
+            results = []
+
+        # 더 많이 얻은 결과를 보존
+        if len(results) > len(best):
+            best = results
+
+        if len(best) >= MIN_COUNT:
+            logger.info(f"질문 {len(best)}개 확보 — attempt={attempt}")
+            break
+
+        if attempt < MAX_RETRIES:
+            logger.warning(f"질문 {len(results)}개 반환 (목표 {MIN_COUNT}개 미달) — 재시도 {attempt + 1}/{MAX_RETRIES}")
+
+    if not best:
+        logger.warning("AI 질문 생성 최종 실패 — 빈 리스트 반환")
+
+    return best
 
 
 def _normalize_question(q: dict) -> dict:
