@@ -58,16 +58,6 @@ def analyze_anomalies(record_data: dict) -> list[dict]:
                 "severity": "caution",
             })
 
-    # 체중 (이전 기록 없이 절대값만 판단 — 기준 부재 시 75kg 이상 플래그)
-    weight = record_data.get("weight")
-    if weight and weight > 80:
-        results.append({
-            "field":    "weight",
-            "value":    weight,
-            "reason":   f"체중이 {weight}kg으로 높습니다. 부종 여부 및 수분 균형을 확인하세요.",
-            "severity": "caution",
-        })
-
     # 소변량
     urine = record_data.get("urine_count")
     if urine is not None and urine == 0:

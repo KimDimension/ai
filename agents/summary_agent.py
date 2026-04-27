@@ -22,6 +22,7 @@ def generate_summary_and_triage(
     ai_survey_responses: list[dict] = None,
     conversation_messages: list[dict] = None,  # 하위 호환성 유지 (무시됨)
     historical_context: dict = None,
+    rag_context: str = "",
 ) -> dict:
     """
     설문 완료 후 위험도 + 요약 + EMR 생성
@@ -101,9 +102,18 @@ def generate_summary_and_triage(
 - 위험도 이력: 긴급 {rs.get('urgent', 0)}회 / 주의 {rs.get('caution', 0)}회 / 정상 {rs.get('normal', 0)}회
 """
 
+        # RAG 블록 구성
+        rag_block = ""
+        if rag_context:
+            rag_block = f"""
+[RAG 의학 지침 — KDIGO · ISPD · MedlinePlus 근거]
+아래 지침을 위험도 판단의 기준으로 활용하세요.
+{rag_context}
+"""
+
         prompt = f"""당신은 CAPD(복막투석) 전문 의료 AI입니다.
-아래 환자 데이터를 바탕으로 위험도 분류, 의사용 요약, EMR(SOAP)을 작성하세요.
-{history_block}
+아래 환자 데이터와 의학 지침을 바탕으로 위험도 분류, 의사용 요약, EMR(SOAP)을 작성하세요.
+{history_block}{rag_block}
 [오늘 투석 기록]
 {json.dumps(record_data, ensure_ascii=False, indent=2)}
 
@@ -113,24 +123,25 @@ def generate_summary_and_triage(
 [AI 추천 질문 응답]
 {ai_survey_text}
 
-[작성 기준]
+[위험도 분류 기준]
+위 RAG 의학 지침(KDIGO · ISPD · MedlinePlus)을 기준으로 판단하세요.
+- urgent(긴급): 즉각적인 의사 개입이 필요한 상태 (지침에서 immediate/urgent로 분류되는 소견)
+- caution(주의): 경과 관찰 또는 조기 개입이 필요한 상태 (지침의 경고 기준에 해당하는 소견)
+- normal(정상): 지침 기준 내 이상 소견 없음
+※ RAG 지침이 없는 경우 임상적 판단으로 결정하세요.
 
-위험도 분류:
-- urgent(긴급): 복막염 의심(탁한 투석액+복통+발열), 극심한 증상, 즉각 처치 필요
-- caution(주의): 체중 2kg 이상 증가, 혈압 160 이상 또는 90 미만, 혈당 250 이상, 소변량 감소 등
-- normal(정상): 이상 소견 없음
-
-요약 작성 지침:
+[요약 작성 지침]
 - 의사가 한눈에 파악할 수 있도록 2~4문장으로 핵심만 작성
 - 이상 수치와 환자 호소 증상 중심으로 작성
 - 최근 추세 요약이 있다면 오늘 수치를 추세 맥락에서 해석할 것 (예: "혈압이 2주 연속 상승 중")
 - AI 설문 응답에서 주목할 내용이 있으면 포함
+- 참고한 의학 지침이 있다면 간략히 언급 (예: "ISPD 기준 복막염 의심")
 - 한국어로 작성
 
-EMR SOAP 작성:
+[EMR SOAP 작성]
 - S(Subjective): 환자가 직접 호소한 증상 (설문 응답 기반)
 - O(Objective): 객관적 수치 (기록 데이터 기반)
-- A(Assessment): AI의 소견 및 위험도
+- A(Assessment): AI의 소견 및 위험도, 참고 지침
 - P(Plan): 권장 조치 사항
 
 [응답 형식 — 반드시 JSON으로만 응답]

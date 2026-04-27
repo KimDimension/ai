@@ -81,11 +81,15 @@ def create_summary(body: SummaryRequest):
     기록 제출 후 위험도 + 요약 + EMR 생성
     backend 서버가 설문 응답 저장 후 호출
     """
+    # RAG 검색 — 위험도 판단용으로 top_k=5 (질문 생성보다 더 많은 컨텍스트)
+    rag_context = search_kdigo_context(body.record_data, top_k=5)
+
     result = generate_summary_and_triage(
         record_data=body.record_data,
         common_qa=body.common_qa,
         ai_survey_responses=body.ai_survey_responses,
         historical_context=body.historical_context or {},
+        rag_context=rag_context,
     )
     return SummaryResponse(**result)
 
