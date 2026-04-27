@@ -27,14 +27,18 @@ def generate_ai_questions(
     record_data: dict,
     rejected_keys: list[str] = None,
     kdigo_context: str = "",
+    historical_context: dict = None,
 ) -> list[dict]:
     """
     환자 투석 기록 기반 AI 추천 질문 생성 (구조화된 설문용)
 
     Args:
-        record_data:    환자의 오늘 투석 기록 dict
-        rejected_keys:  제외할 질문 패턴 키 목록
-        kdigo_context:  RAG로 검색한 KDIGO 관련 문단
+        record_data:        환자의 오늘 투석 기록 dict
+        rejected_keys:      제외할 질문 패턴 키 목록
+        kdigo_context:      RAG로 검색한 KDIGO 관련 문단
+        historical_context: 환자 과거 기록 추세 데이터 (선택)
+                            {days, bp:{avg,max,min,trend}, weight:{avg,delta_7d,trend},
+                             uf:{weekly_avg,trend}, glucose:{avg,max}, risk_summary:{...}}
 
     Returns:
         [
@@ -53,6 +57,26 @@ def generate_ai_questions(
         rejected_str = ", ".join(rejected_keys) if rejected_keys else "없음"
         anomaly_text = summarize_anomalies_text(record_data)
 
+        # 과거 추세 블록 구성 — 기록이 1개라도 있으면 주입
+        history_block = ""
+        if historical_context and historical_context.get("days", 0) >= 1:
+            h = historical_context
+            bp = h.get("bp", {})
+            wt = h.get("weight", {})
+            uf = h.get("uf", {})
+            gl = h.get("glucose", {})
+            rs = h.get("risk_summary", {})
+            uf_weekly = ", ".join(str(v) for v in uf.get("weekly_avg", [])) or "데이터 없음"
+            history_block = f"""
+[환자 과거 기록 추세 — {h['days']}일 기준]
+- 혈압: 평균 {bp.get('avg', 'N/A')} mmHg, 최고 {bp.get('max', 'N/A')}, 추세: {bp.get('trend', 'N/A')}
+- 체중: 평균 {wt.get('avg', 'N/A')} kg, 최근 변화 {wt.get('delta_7d', 'N/A')} kg, 추세: {wt.get('trend', 'N/A')}
+- UF량 주간 평균(최근→과거): {uf_weekly}, 추세: {uf.get('trend', 'N/A')}
+- 공복혈당: 평균 {gl.get('avg', 'N/A')}, 최고 {gl.get('max', 'N/A')} mg/dL
+- 위험도 이력: 긴급 {rs.get('urgent', 0)}회 / 주의 {rs.get('caution', 0)}회 / 정상 {rs.get('normal', 0)}회
+※ 오늘 수치가 이 추세와 다르게 변했다면, 그 변화를 우선적으로 질문에 반영하세요.
+"""
+
         kdigo_block = ""
         if kdigo_context:
             kdigo_block = f"""
@@ -61,8 +85,8 @@ def generate_ai_questions(
 """
 
         prompt = f"""당신은 CAPD(복막투석) 환자를 담당하는 의료팀의 AI 보조 도구입니다.
-아래 오늘의 투석 기록과 이상 수치 분석을 바탕으로, 의사에게 환자 상태를 전달하기 위한 추가 질문 1개를 생성하세요.
-{kdigo_block}
+아래 오늘의 투석 기록과 이상 수치 분석, 그리고 환자의 과거 추세를 종합하여 의사에게 환자 상태를 전달하기 위한 추가 질문 1개를 생성하세요.
+{history_block}{kdigo_block}
 [오늘 투석 기록]
 {json.dumps(record_data, ensure_ascii=False, indent=2)}
 

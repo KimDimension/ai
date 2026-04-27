@@ -49,6 +49,7 @@ class AIQuestionsRequest(BaseModel):
     """구조화 설문용 AI 추천 질문 생성 (surveys.py에서 호출)"""
     record_data: dict
     rejected_keys: list[str] = []   # 제외할 패턴 키 목록
+    historical_context: dict = {}   # 환자 과거 기록 추세 데이터 (선택)
 
 
 class AIQuestionsResponse(BaseModel):
@@ -88,5 +89,6 @@ def generate_questions(body: AIQuestionsRequest):
         record_data=body.record_data,
         rejected_keys=body.rejected_keys,
         kdigo_context=kdigo_context,
+        historical_context=body.historical_context or {},
     )
     return AIQuestionsResponse(questions=questions)
