@@ -1,8 +1,9 @@
 """
 정적 설문용 AI 맞춤 질문 생성 에이전트
-- 구 backend/app/services/ai_service.py 역할을 Gemini로 대체
-- 기록 이상 수치 기반으로 예/아니오 질문 1개 생성
-- RAG(KDIGO 검색) 컨텍스트 주입 지원
+- KDIGO·ISPD·MedlinePlus RAG 컨텍스트 + 과거 추세 기반으로 3~5개 질문 생성
+- 이상 수치 없을 때도 CAPD 루틴 카테고리 힌트 주입으로 반드시 생성
+- response_mime_type 제거 (constrained 모드가 배열 최소화하는 원인)
+- 질문 3개 미만 시 최대 2회 재시도, temperature +0.15씩 상향
 """
 import json
 import logging
@@ -17,22 +18,78 @@ logger = logging.getLogger(__name__)
 
 genai.configure(api_key=settings.GEMINI_API_KEY)
 
+# 이상 없을 때 Gemini에 힌트로 주입할 CAPD 루틴 카테고리
+ROUTINE_CATEGORIES = [
+    "복막염 징후 (투석액 색깔·혼탁도·복통·발열)",
+    "수분 균형 (부종·갈증·소변량 변화)",
+    "식이 및 식욕 (염분 섭취·식욕 저하·구역감)",
+    "투석 상태 (배액 속도·주입 불편감·카테터 부위)",
+    "전신 컨디션 및 활동량 (피로·호흡 곤란·수면)",
+]
+
+
+def _parse_questions(text: str) -> list[dict]:
+    """
+    Gemini 응답 텍스트에서 질문 리스트 추출
+    - 코드블록 제거 → JSON 파싱 → partial recovery → regex fallback 순서
+    """
+    clean = text.strip()
+
+    # 코드블록 제거
+    if "```json" in clean:
+        clean = clean.split("```json")[1].split("```")[0].strip()
+    elif "```" in clean:
+        clean = clean.split("```")[1].split("```")[0].strip()
+
+    # 1차: 직접 파싱
+    try:
+        data = json.loads(clean)
+        if isinstance(data, list):
+            return [q for q in data if isinstance(q, dict) and "question_text" in q]
+        if isinstance(data, dict) and "questions" in data:
+            return [q for q in data["questions"] if isinstance(q, dict) and "question_text" in q]
+    except json.JSONDecodeError:
+        pass
+
+    # 2차: partial recovery — 완성된 {...} 객체 개별 추출
+    logger.warning(f"AI 질문 JSON 파싱 실패, partial recovery 시도: {clean[:80]}")
+    recovered = []
+    for m in re.finditer(r'\{[^{}]*"question_text"[^{}]*\}', clean, re.DOTALL):
+        try:
+            obj = json.loads(m.group(0))
+            if "question_text" in obj:
+                recovered.append(obj)
+        except json.JSONDecodeError:
+            pass
+
+    if recovered:
+        return recovered
+
+    # 3차: regex로 question_text만 추출
+    texts = re.findall(r'"question_text"\s*:\s*"((?:[^"\\]|\\.)*)"', clean)
+    if texts:
+        return [{"question_text": t.replace('\\n', '\n'), "question_type": "yes_no"} for t in texts]
+
+    return []
+
 
 def generate_ai_questions(
     record_data: dict,
     rejected_keys: list[str] = None,
     kdigo_context: str = "",
+    historical_context: dict = None,
 ) -> list[dict]:
     """
-    환자 투석 기록 기반 AI 맞춤 질문 생성 (예/아니오 설문용)
+    환자 투석 기록 기반 AI 맞춤 질문 생성 (3~5개)
 
     Args:
-        record_data:    환자의 오늘 투석 기록 dict
-        rejected_keys:  제외할 질문 패턴 키 목록
-        kdigo_context:  RAG로 검색한 KDIGO 관련 문단
+        record_data:        환자의 오늘 투석 기록 dict
+        rejected_keys:      제외할 질문 패턴 키 목록
+        kdigo_context:      RAG로 검색한 KDIGO·ISPD·MedlinePlus 관련 문단
+        historical_context: 최근 30일 집계 데이터 (선택)
 
     Returns:
-        [{"question_text": "...", "reason": "..."}] 형태 리스트
+        [{"question_text", "question_type", "options", "reason"}] 리스트
         오류 시 빈 리스트 반환
     """
     try:
@@ -41,65 +98,116 @@ def generate_ai_questions(
         rejected_str = ", ".join(rejected_keys) if rejected_keys else "없음"
         anomaly_text = summarize_anomalies_text(record_data)
 
+        # RAG 블록
         kdigo_block = ""
         if kdigo_context:
             kdigo_block = f"""
-[KDIGO 관련 지침]
+[RAG 의학 지침 — KDIGO · ISPD · MedlinePlus]
 {kdigo_context}
 """
 
+        # 과거 추세 블록
+        history_block = ""
+        if historical_context and historical_context.get("days", 0) >= 1:
+            h = historical_context
+            bp = h.get("bp", {})
+            wt = h.get("weight", {})
+            uf = h.get("uf", {})
+            gl = h.get("glucose", {})
+            rs = h.get("risk_summary", {})
+            uf_weekly = ", ".join(str(v) for v in uf.get("weekly_avg", [])) or "데이터 없음"
+            history_block = f"""
+[최근 {h['days']}일 추세]
+- 혈압: 평균 {bp.get('avg', 'N/A')}, 추세: {bp.get('trend', 'N/A')}
+- 체중: 평균 {wt.get('avg', 'N/A')}kg, 최근 7일 변화 {wt.get('delta_7d', 'N/A')}kg, 추세: {wt.get('trend', 'N/A')}
+- UF량 주간 평균(최근→과거): {uf_weekly}, 추세: {uf.get('trend', 'N/A')}
+- 공복혈당: 평균 {gl.get('avg', 'N/A')}, 최고 {gl.get('max', 'N/A')} mg/dL
+- 위험도 이력: 긴급 {rs.get('urgent', 0)}회 / 주의 {rs.get('caution', 0)}회 / 정상 {rs.get('normal', 0)}회
+"""
+
+        # 이상 수치 없을 때 루틴 카테고리 힌트 주입
+        routine_block = ""
+        if anomaly_text == "이상 수치 없음":
+            cats = "\n".join(f"  - {c}" for c in ROUTINE_CATEGORIES)
+            routine_block = f"""
+[루틴 확인 카테고리 — 이상 수치가 없어도 아래 항목에서 반드시 질문을 만드세요]
+{cats}
+"""
+
         prompt = f"""당신은 CAPD(복막투석) 환자를 담당하는 의료 AI 어시스턴트입니다.
-아래 오늘의 투석 기록과 이상 수치 분석을 바탕으로, 의사가 환자에게 추가로 확인해야 할 증상을 묻는 질문을 생성하세요.
-{kdigo_block}
+아래 데이터를 종합해 의사가 환자에게 확인할 질문 3~5개를 생성하세요.
+{kdigo_block}{history_block}{routine_block}
 [오늘 투석 기록]
 {json.dumps(record_data, ensure_ascii=False, indent=2)}
 
 [이상 수치 분석]
 {anomaly_text}
 
-[이미 제외된 패턴]
+[제외할 패턴]
 {rejected_str}
 
-규칙:
-- 이상 수치나 주의가 필요한 항목에 집중하세요
-- KDIGO 지침이 있으면 해당 근거를 바탕으로 질문하세요
-- 환자가 예/아니오로 답할 수 있는 구체적인 질문을 만드세요
-- 의학 전문용어보다 쉬운 한국어 표현을 사용하세요
-- 제외된 패턴과 유사한 질문은 만들지 마세요
+[질문 생성 규칙]
+- 반드시 3개 이상 5개 이하의 질문을 생성하세요 (이상 수치가 없어도 무조건 3개 이상)
+- 이상 수치가 있으면 해당 항목 중심으로, 없으면 루틴 카테고리에서 골고루 선택
+- 과거 추세가 있으면 추세 변화를 고려한 질문 포함 (예: "혈압이 2주째 상승 중인데 두통이 있나요?")
+- KDIGO·ISPD 지침이 있으면 해당 근거 기반 질문 우선
+- 환자가 이해하기 쉬운 한국어 표현 사용
+- 제외 패턴과 유사한 질문 금지
+- question_type: yes_no(예/아니오), single_select(단일 선택), multi_select(다중 선택), short_text(단답)
+- single_select·multi_select는 options 배열 필수 (2~4개)
 
-아래 JSON 형식으로만 응답하세요:
-{{"question_text": "질문 내용"}}"""
+[응답 형식 — JSON 배열만 출력, 다른 텍스트 금지]
+[
+  {{
+    "question_text": "질문 내용",
+    "question_type": "yes_no",
+    "options": null,
+    "reason": "질문 생성 근거 (의사용)"
+  }},
+  {{
+    "question_text": "질문 내용",
+    "question_type": "single_select",
+    "options": ["선택지1", "선택지2", "선택지3"],
+    "reason": "질문 생성 근거 (의사용)"
+  }}
+]"""
 
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.5,
-                max_output_tokens=1024,
-                response_mime_type="application/json",
-            ),
-        )
+        best: list[dict] = []
+        temperature = 0.5
 
-        text = response.text.strip()
+        # 질문 3개 미만이면 최대 2회 재시도, temperature +0.15씩 상향
+        for attempt in range(3):
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=temperature,
+                    max_output_tokens=4096,
+                    # response_mime_type 제거 — constrained JSON 모드가 배열 최소화하는 원인
+                ),
+            )
 
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            # JSON이 잘린 경우 question_text만 regex로 추출
-            match = re.search(r'"question_text"\s*:\s*"([^"]+)"', text)
-            if match:
-                return [{"question_text": match.group(1)}]
-            return []
+            questions = _parse_questions(response.text)
 
-        if isinstance(data, dict) and "question_text" in data:
-            return [data]
-        elif isinstance(data, list):
-            return data
+            # 현재까지 best 보존
+            if len(questions) > len(best):
+                best = questions
 
-        return []
+            if len(best) >= 3:
+                break
 
-    except json.JSONDecodeError as e:
-        logger.warning(f"AI 질문 JSON 파싱 실패: {e}")
-        return []
+            temperature = min(temperature + 0.15, 1.0)
+            logger.warning(
+                f"AI 질문 {len(questions)}개 생성 (시도 {attempt + 1}/3), "
+                f"재시도 temperature={temperature:.2f}"
+            )
+
+        if not best:
+            logger.error("AI 질문 생성 완전 실패 (3회 시도)")
+        else:
+            logger.info(f"AI 질문 {len(best)}개 생성 완료")
+
+        return best
+
     except Exception as e:
-        logger.warning(f"AI 질문 생성 실패: {e}")
+        logger.error(f"AI 질문 생성 실패: {e}")
         return []
