@@ -155,6 +155,8 @@ def generate_ai_questions(
 - 제외 패턴과 유사한 질문 금지
 - question_type: yes_no(예/아니오), single_select(단일 선택), multi_select(다중 선택), short_text(단답)
 - single_select·multi_select는 options 배열 필수 (2~4개)
+- 질문 타입을 다양하게 섞으세요 — yes_no만 쓰지 말고 single_select·short_text 등 골고루 활용
+  (예: 증상 빈도 → single_select ["없었다","가끔","자주"], 통증 부위 → multi_select, 특이사항 → short_text)
 
 [응답 형식 — JSON 배열만 출력, 다른 텍스트 금지]
 [
