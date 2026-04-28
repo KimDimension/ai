@@ -153,7 +153,9 @@ def generate_ai_questions(
 - KDIGO·ISPD 지침이 있으면 해당 근거 기반 질문 우선
 - 환자가 이해하기 쉬운 한국어 표현 사용
 - 제외 패턴과 유사한 질문 금지
+- 질문 어미는 "~나요?", "~셨나요?", "~인가요?" 형식으로 작성. "~는지요?", "~었는지요?" 형식 금지
 - question_type: yes_no(예/아니오), single_select(단일 선택), multi_select(다중 선택), short_text(단답)
+- yes_no 질문은 options에 반드시 [긍정_답변, 부정_답변] 형태 레이블 지정 (예: ["있었다","없었다"], ["아팠다","괜찮았다"], ["늘었다","줄었다"])
 - single_select·multi_select는 options 배열 필수 (2~4개)
 - 질문 타입을 다양하게 섞으세요 — yes_no만 쓰지 말고 single_select·short_text 등 골고루 활용
   (예: 증상 빈도 → single_select ["없었다","가끔","자주"], 통증 부위 → multi_select, 특이사항 → short_text)
@@ -163,7 +165,7 @@ def generate_ai_questions(
   {{
     "question_text": "질문 내용",
     "question_type": "yes_no",
-    "options": null,
+    "options": ["있었다", "없었다"],
     "reason": "질문 생성 근거 (의사용)"
   }},
   {{
