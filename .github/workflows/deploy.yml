@@ -88,3 +88,6 @@ jobs:
             --port=8001
             --memory=2Gi
             --timeout=300
+            --cpu=2
+            --cpu-boost
+            --min-instances=1
