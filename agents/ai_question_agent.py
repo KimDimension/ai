@@ -9,14 +9,12 @@ import json
 import logging
 import re
 
-import google.generativeai as genai
+from vertexai.generative_models import GenerativeModel, GenerationConfig
 
-from ai.config import settings
+from ai.config import settings  # noqa: F401 — vertexai.init() 호출 포함
 from ai.tools.record_analyzer import summarize_anomalies_text
 
 logger = logging.getLogger(__name__)
-
-genai.configure(api_key=settings.GEMINI_API_KEY)
 
 # 이상 없을 때 Gemini에 힌트로 주입할 CAPD 루틴 카테고리
 ROUTINE_CATEGORIES = [
@@ -95,7 +93,7 @@ def generate_ai_questions(
         오류 시 빈 리스트 반환
     """
     try:
-        model = genai.GenerativeModel(model_name=settings.GEMINI_MODEL)
+        model = GenerativeModel(model_name=settings.GEMINI_MODEL)
 
         rejected_str = ", ".join(rejected_keys) if rejected_keys else "없음"
         anomaly_text = summarize_anomalies_text(record_data)
@@ -200,7 +198,7 @@ def generate_ai_questions(
         for attempt in range(3):
             response = model.generate_content(
                 prompt,
-                generation_config=genai.types.GenerationConfig(
+                generation_config=GenerationConfig(
                     temperature=temperature,
                     max_output_tokens=4096,
                     # response_mime_type 제거 — constrained JSON 모드가 배열 최소화하는 원인

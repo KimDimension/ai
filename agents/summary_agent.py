@@ -7,13 +7,11 @@
 import json
 import logging
 
-import google.generativeai as genai
+from vertexai.generative_models import GenerativeModel, GenerationConfig
 
-from ai.config import settings
+from ai.config import settings  # noqa: F401 — vertexai.init() 호출 포함
 
 logger = logging.getLogger(__name__)
-
-genai.configure(api_key=settings.GEMINI_API_KEY)
 
 
 MAX_RETRIES = 2
@@ -54,7 +52,7 @@ def generate_summary_and_triage(
         }
     """
     try:
-        model = genai.GenerativeModel(model_name=settings.GEMINI_MODEL)
+        model = GenerativeModel(model_name=settings.GEMINI_MODEL)
 
         # 공통질문 응답 정리
         common_text = "없음"
@@ -174,7 +172,7 @@ def generate_summary_and_triage(
                 temperature = 0.2 if attempt == 0 else 0.4
                 response = model.generate_content(
                     prompt,
-                    generation_config=genai.types.GenerationConfig(
+                    generation_config=GenerationConfig(
                         temperature=temperature,
                         max_output_tokens=8192,
                         # response_mime_type 제거 — constrained JSON 모드가 출력을 truncate하는 원인
