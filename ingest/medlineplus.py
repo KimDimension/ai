@@ -7,16 +7,15 @@ SHA256 해시 비교로 변경된 토픽만 재인제스트 (불필요한 재처
 
 소스 태그: 'medlineplus_{topic_key}' (예: medlineplus_peritoneal_dialysis)
 
-사용법:
+사용법 (로컬/수동):
   # 변경된 토픽만 업데이트 (기본)
-  cd ~/capd && python -m ai.ingest.medlineplus
+  python -m ai.ingest.medlineplus
 
   # 전체 강제 재인제스트
-  cd ~/capd && python -m ai.ingest.medlineplus --force
+  python -m ai.ingest.medlineplus --force
 
-EC2 cron 등록 (매주 월요일 새벽 3시):
-  crontab -e
-  0 3 * * 1  cd ~/capd && python -m ai.ingest.medlineplus >> ~/capd/logs/medlineplus_ingest.log 2>&1
+자동 실행: GCP Cloud Scheduler → POST /admin/ingest/medlineplus (매주 월요일 03:00 KST)
+  - 이전 방식(EC2 cron)은 GCP 이전 후 폐기됨
 """
 
 import hashlib

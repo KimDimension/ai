@@ -115,3 +115,21 @@ def generate_questions(body: AIQuestionsRequest):
         patient_profile=body.patient_profile or {},
     )
     return AIQuestionsResponse(questions=questions)
+
+
+# ── 관리자 엔드포인트 ────────────────────────────────────────────
+
+@app.post("/admin/ingest/medlineplus")
+def admin_ingest_medlineplus(force: bool = False):
+    """
+    MedlinePlus RAG 데이터 업데이트
+    GCP Cloud Scheduler가 매주 월요일 03:00 KST에 자동 호출.
+    force=true 이면 해시 무관하게 전체 재인제스트.
+    """
+    try:
+        from ai.ingest.medlineplus import ingest
+        ingest(force=force)
+        return {"status": "ok", "message": "MedlinePlus 인제스트 완료"}
+    except Exception as e:
+        logger.error(f"MedlinePlus 인제스트 실패: {e}")
+        return {"status": "error", "message": str(e)}
