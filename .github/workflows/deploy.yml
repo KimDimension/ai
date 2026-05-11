@@ -83,7 +83,7 @@ jobs:
             --service-account=capd-runner@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com
             --add-cloudsql-instances=${{ secrets.GCP_PROJECT_ID }}:asia-northeast3:capd-db
             --set-secrets=DATABASE_URL=DATABASE_URL:latest
-            --set-env-vars=GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }},GCP_LOCATION=us-central1,GEMINI_MODEL=gemini-2.0-flash
+            --set-env-vars=GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }},GCP_LOCATION=us-central1,GEMINI_MODEL=gemini-2.5-flash
             --allow-unauthenticated
             --port=8001
             --memory=2Gi
