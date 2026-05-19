@@ -98,6 +98,7 @@ _TREND_THRESH = {
     "dwell_mean_minutes":       {"much": 60,   "normal": 30},
     "concentration_max":        {"much": 1.0,  "normal": 0.5},
     "calculated_uf_sum_g":      {"pct_much": 20, "pct_normal": 10},
+    "recorded_uf_sum_g":        {"pct_much": 20, "pct_normal": 10},
     "infused_sum_g":            {"pct_much": 20, "pct_normal": 10},
 }
 
@@ -105,7 +106,7 @@ _UNITS = {
     "body_weight_kg": "kg", "systolic_bp": "mmHg", "diastolic_bp": "mmHg",
     "mean_arterial_pressure": "mmHg", "fasting_blood_sugar": "mg/dL",
     "urination_count": "회", "exchange_count": "회", "dwell_mean_minutes": "분",
-    "concentration_max": "%", "calculated_uf_sum_g": "g", "infused_sum_g": "g",
+    "concentration_max": "%", "calculated_uf_sum_g": "g", "recorded_uf_sum_g": "g", "infused_sum_g": "g",
 }
 
 TREND_ATTRS = list(_TREND_THRESH.keys())
@@ -195,7 +196,7 @@ def task1_trend_analysis(today_row: dict, historical_rows: list[dict]) -> dict:
 # ════════════════════════════════════════════════════════════════
 
 ANOMALY_ATTRS = [
-    "body_weight_kg", "reported_total_uf_g", "calculated_uf_sum_g",
+    "body_weight_kg", "reported_total_uf_g", "calculated_uf_sum_g", "recorded_uf_sum_g",
     "systolic_bp", "diastolic_bp", "mean_arterial_pressure",
     "fasting_blood_sugar", "infused_sum_g",
 ]
@@ -273,7 +274,7 @@ def task2_anomaly_detection(today_row: dict, historical_rows: list[dict]) -> dic
 # ════════════════════════════════════════════════════════════════
 
 CORR_ATTRS = [
-    "body_weight_kg", "reported_total_uf_g", "calculated_uf_sum_g",
+    "body_weight_kg", "reported_total_uf_g", "calculated_uf_sum_g", "recorded_uf_sum_g",
     "systolic_bp", "diastolic_bp", "mean_arterial_pressure",
     "fasting_blood_sugar", "urination_count", "exchange_count",
     "infused_sum_g", "dwell_mean_minutes", "concentration_max",
