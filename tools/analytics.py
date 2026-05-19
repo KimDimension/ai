@@ -2,10 +2,10 @@
 CAPD 데이터 분석 모듈 (Task 1~4)
 문서(proj1_ANALYSE HISTORICAL HEALTH DATA) 정의 기반
 
-Task 1: Trend Analysis    — 7d/30d rolling 비교, 5단계 분류
-Task 2: Anomaly Detection — rolling z-score + robust z-score (MAD 기반)
-Task 3: Attribute Correlation — Spearman 상관계수 (|r| >= 0.5 쌍만 선별)
-Task 4: Exploratory Data Analysis — min/max/mean/std + today vs 7d/30d
+Task 1: Trend Analysis    -- 7d/30d rolling 비교, 5단계 분류
+Task 2: Anomaly Detection -- rolling z-score + robust z-score (MAD 기반)
+Task 3: Attribute Correlation -- Spearman 상관계수 (|r| >= 0.5 쌍만 선별)
+Task 4: Exploratory Data Analysis -- min/max/mean/std + today vs 7d/30d
 
 순수 Python 구현 (외부 라이브러리 의존 없음)
 """
@@ -14,9 +14,9 @@ import math
 from typing import Optional
 
 
-# ════════════════════════════════════════════════════════════════
+# ================================================================
 # 공통 수학 유틸
-# ════════════════════════════════════════════════════════════════
+# ================================================================
 
 def _valid(series: list) -> list[float]:
     return [float(v) for v in series if v is not None]
@@ -82,31 +82,38 @@ def _spearman(x: list[float], y: list[float]) -> Optional[float]:
     return round(num / (den_x * den_y), 3)
 
 
-# ════════════════════════════════════════════════════════════════
+# ================================================================
 # Task 1: Trend Analysis
-# ════════════════════════════════════════════════════════════════
+# ================================================================
 
-# 속성별 이상 기준 임계값 (절대값 기반 vs 퍼센트 기반)
 _TREND_THRESH = {
-    "body_weight_kg":           {"much": 1.5,  "normal": 0.5},
-    "systolic_bp":              {"much": 15,   "normal": 5},
-    "diastolic_bp":             {"much": 10,   "normal": 4},
-    "mean_arterial_pressure":   {"much": 10,   "normal": 4},
-    "fasting_blood_sugar":      {"much": 30,   "normal": 10},
-    "urination_count":          {"much": 5,    "normal": 2},
-    "exchange_count":           {"much": 2,    "normal": 1},
-    "dwell_mean_minutes":       {"much": 60,   "normal": 30},
-    "concentration_max":        {"much": 1.0,  "normal": 0.5},
-    "calculated_uf_sum_g":      {"pct_much": 20, "pct_normal": 10},
-    "recorded_uf_sum_g":        {"pct_much": 20, "pct_normal": 10},
-    "infused_sum_g":            {"pct_much": 20, "pct_normal": 10},
+    "body_weight_kg":         {"much": 1.5,  "normal": 0.5},
+    "systolic_bp":            {"much": 15,   "normal": 5},
+    "diastolic_bp":           {"much": 10,   "normal": 4},
+    "mean_arterial_pressure": {"much": 10,   "normal": 4},
+    "fasting_blood_sugar":    {"much": 30,   "normal": 10},
+    "urination_count":        {"much": 5,    "normal": 2},
+    "exchange_count":         {"much": 2,    "normal": 1},
+    "dwell_mean_minutes":     {"much": 60,   "normal": 30},
+    "concentration_max":      {"much": 1.0,  "normal": 0.5},
+    "calculated_uf_sum_g":    {"pct_much": 20, "pct_normal": 10},
+    "recorded_uf_sum_g":      {"pct_much": 20, "pct_normal": 10},
+    "infused_sum_g":          {"pct_much": 20, "pct_normal": 10},
 }
 
 _UNITS = {
-    "body_weight_kg": "kg", "systolic_bp": "mmHg", "diastolic_bp": "mmHg",
-    "mean_arterial_pressure": "mmHg", "fasting_blood_sugar": "mg/dL",
-    "urination_count": "회", "exchange_count": "회", "dwell_mean_minutes": "분",
-    "concentration_max": "%", "calculated_uf_sum_g": "g", "recorded_uf_sum_g": "g", "infused_sum_g": "g",
+    "body_weight_kg":         "kg",
+    "systolic_bp":            "mmHg",
+    "diastolic_bp":           "mmHg",
+    "mean_arterial_pressure": "mmHg",
+    "fasting_blood_sugar":    "mg/dL",
+    "urination_count":        "회",
+    "exchange_count":         "회",
+    "dwell_mean_minutes":     "분",
+    "concentration_max":      "%",
+    "calculated_uf_sum_g":    "g",
+    "recorded_uf_sum_g":      "g",
+    "infused_sum_g":          "g",
 }
 
 TREND_ATTRS = list(_TREND_THRESH.keys())
@@ -135,7 +142,7 @@ def task1_trend_analysis(today_row: dict, historical_rows: list[dict]) -> dict:
 
     Args:
         today_row:       오늘 Daily Model Row
-        historical_rows: 최신→과거 순 (오늘 제외)
+        historical_rows: 최신->과거 순 (오늘 제외)
     """
     results = {}
     for attr in TREND_ATTRS:
@@ -155,22 +162,21 @@ def task1_trend_analysis(today_row: dict, historical_rows: list[dict]) -> dict:
         if last_30d:
             m30 = sum(last_30d) / len(last_30d)
             d30 = round(today_val - m30, 2)
-            entry["previous_30d_mean"]          = round(m30, 2)
-            entry["difference_from_30d_mean"]   = d30
+            entry["previous_30d_mean"]        = round(m30, 2)
+            entry["difference_from_30d_mean"] = d30
             entry["trend_30d"] = _classify_trend(d30, thresh, m30)
 
         if last_7d:
             m7  = sum(last_7d) / len(last_7d)
             d7  = round(today_val - m7, 2)
             pct = round((today_val - m7) / m7 * 100, 1) if m7 != 0 else None
-            entry["previous_7d_mean"]                   = round(m7, 2)
-            entry["difference_from_7d_mean"]            = d7
-            entry["percentage_change_from_7d_mean"]     = pct
+            entry["previous_7d_mean"]               = round(m7, 2)
+            entry["difference_from_7d_mean"]        = d7
+            entry["percentage_change_from_7d_mean"] = pct
             entry["trend_7d"] = _classify_trend(d7, thresh, m7)
 
         entry["trend_summary"] = entry.get("trend_30d") or entry.get("trend_7d") or "insufficient_data"
 
-        # 자연어 statement 생성
         parts = [f"오늘 값 {today_val} {unit}."]
         if "trend_30d" in entry:
             parts.append(
@@ -191,14 +197,20 @@ def task1_trend_analysis(today_row: dict, historical_rows: list[dict]) -> dict:
     return {"task": "trend_analysis", "results": results}
 
 
-# ════════════════════════════════════════════════════════════════
+# ================================================================
 # Task 2: Anomaly Detection
-# ════════════════════════════════════════════════════════════════
+# ================================================================
 
 ANOMALY_ATTRS = [
-    "body_weight_kg", "reported_total_uf_g", "calculated_uf_sum_g", "recorded_uf_sum_g",
-    "systolic_bp", "diastolic_bp", "mean_arterial_pressure",
-    "fasting_blood_sugar", "infused_sum_g",
+    "body_weight_kg",
+    "reported_total_uf_g",
+    "calculated_uf_sum_g",
+    "recorded_uf_sum_g",
+    "systolic_bp",
+    "diastolic_bp",
+    "mean_arterial_pressure",
+    "fasting_blood_sugar",
+    "infused_sum_g",
 ]
 
 _Z_LEVELS = [(3.0, "strong_anomaly"), (2.0, "mild_anomaly")]
@@ -215,7 +227,7 @@ def task2_anomaly_detection(today_row: dict, historical_rows: list[dict]) -> dic
     """
     오늘 값 vs 30일 window:
     - rolling z-score = (today - 30d_mean) / 30d_std
-    - robust z-score  = 0.6745 × (today - 30d_median) / MAD
+    - robust z-score  = 0.6745 * (today - 30d_median) / MAD
     """
     results = {}
     for attr in ANOMALY_ATTRS:
@@ -229,55 +241,64 @@ def task2_anomaly_detection(today_row: dict, historical_rows: list[dict]) -> dic
 
         if len(hist) < 3:
             results[attr] = {
-                "today_value": today_val,
+                "today_value":    today_val,
                 "sufficient_data": False,
-                "statement": f"오늘 값 {today_val} {unit} — 과거 데이터 부족 ({len(hist)}개, 최소 3개 필요)",
+                "statement": f"오늘 값 {today_val} {unit} -- 과거 데이터 부족 ({len(hist)}개, 최소 3개 필요)",
             }
             continue
 
-        mean_30  = sum(hist) / len(hist)
-        std_30   = _std(hist) or 0.001
-        med_30   = _median(hist) or mean_30
-        mad_30   = _mad(hist) or 0.001
+        mean_30 = sum(hist) / len(hist)
+        std_30  = _std(hist) or 0.001
+        med_30  = _median(hist) or mean_30
+        mad_30  = _mad(hist) or 0.001
 
-        z_score   = round((today_val - mean_30) / std_30, 3)
-        robust_z  = round(0.6745 * (today_val - med_30) / mad_30, 3)
+        z_score  = round((today_val - mean_30) / std_30, 3)
+        robust_z = round(0.6745 * (today_val - med_30) / mad_30, 3)
 
-        z_label       = _z_label(z_score)
-        robust_label  = _z_label(robust_z)
+        z_label      = _z_label(z_score)
+        robust_label = _z_label(robust_z)
 
         statement = (
             f"오늘 값 {today_val} {unit}, 30일 평균 {round(mean_30, 2)} {unit}, "
             f"표준편차 {round(std_30, 2)} {unit}. "
-            f"Rolling z-score: {z_score} → {z_label}. "
-            f"Robust z-score: {robust_z} → {robust_label}."
+            f"Rolling z-score: {z_score} -> {z_label}. "
+            f"Robust z-score: {robust_z} -> {robust_label}."
         )
 
         results[attr] = {
-            "today_value":        today_val,
-            "baseline_mean":      round(mean_30, 2),
-            "baseline_std":       round(std_30, 2),
-            "z_score_30d":        z_score,
-            "z_interpretation":   z_label,
-            "robust_z_score":     robust_z,
+            "today_value":           today_val,
+            "baseline_mean":         round(mean_30, 2),
+            "baseline_std":          round(std_30, 2),
+            "z_score_30d":           z_score,
+            "z_interpretation":      z_label,
+            "robust_z_score":        robust_z,
             "robust_interpretation": robust_label,
-            "is_anomaly":         z_label != "normal" or robust_label != "normal",
-            "sufficient_data":    True,
-            "statement":          statement,
+            "is_anomaly":            z_label != "normal" or robust_label != "normal",
+            "sufficient_data":       True,
+            "statement":             statement,
         }
 
     return {"task": "anomaly_detection", "results": results}
 
 
-# ════════════════════════════════════════════════════════════════
+# ================================================================
 # Task 3: Attribute Correlation (Spearman)
-# ════════════════════════════════════════════════════════════════
+# ================================================================
 
 CORR_ATTRS = [
-    "body_weight_kg", "reported_total_uf_g", "calculated_uf_sum_g", "recorded_uf_sum_g",
-    "systolic_bp", "diastolic_bp", "mean_arterial_pressure",
-    "fasting_blood_sugar", "urination_count", "exchange_count",
-    "infused_sum_g", "dwell_mean_minutes", "concentration_max",
+    "body_weight_kg",
+    "reported_total_uf_g",
+    "calculated_uf_sum_g",
+    "recorded_uf_sum_g",
+    "systolic_bp",
+    "diastolic_bp",
+    "mean_arterial_pressure",
+    "fasting_blood_sugar",
+    "urination_count",
+    "exchange_count",
+    "infused_sum_g",
+    "dwell_mean_minutes",
+    "concentration_max",
 ]
 
 _CORR_LEVELS = [(0.9, "very strong"), (0.7, "strong"), (0.5, "moderate")]
@@ -292,19 +313,18 @@ def _corr_label(r: float) -> str:
 
 def task3_attribute_correlation(historical_rows: list[dict], window: int = 30) -> dict:
     """
-    최근 window일치 Spearman 상관관계 — |r| >= 0.5 쌍만 반환
+    최근 window일치 Spearman 상관관계 -- |r| >= 0.5 쌍만 반환
     """
     rows = historical_rows[:window]
     if len(rows) < 7:
         return {
-            "task": "attribute_correlation",
-            "method": "spearman_correlation",
+            "task":        "attribute_correlation",
+            "method":      "spearman_correlation",
             "window_days": len(rows),
-            "results": [],
-            "note": f"데이터 부족 ({len(rows)}일) — 최소 7일 필요",
+            "results":     [],
+            "note":        f"데이터 부족 ({len(rows)}일) -- 최소 7일 필요",
         }
 
-    # 각 속성 시리즈 (충분한 데이터 있는 것만)
     series: dict[str, list[float]] = {}
     for attr in CORR_ATTRS:
         vals = _valid([r.get(attr) for r in rows])
@@ -317,7 +337,6 @@ def task3_attribute_correlation(historical_rows: list[dict], window: int = 30) -
     for i in range(len(attrs)):
         for j in range(i + 1, len(attrs)):
             a1, a2 = attrs[i], attrs[j]
-            # 두 시리즈 공통 인덱스 (둘 다 값 있는 날만)
             x_list, y_list = [], []
             for r in rows:
                 v1, v2 = r.get(a1), r.get(a2)
@@ -355,11 +374,11 @@ def task3_attribute_correlation(historical_rows: list[dict], window: int = 30) -
     }
 
 
-# ════════════════════════════════════════════════════════════════
+# ================================================================
 # Task 4: Exploratory Data Analysis
-# ════════════════════════════════════════════════════════════════
+# ================================================================
 
-EDA_ATTRS = CORR_ATTRS  # 동일 속성 세트
+EDA_ATTRS = CORR_ATTRS
 
 
 def task4_eda(today_row: dict, historical_rows: list[dict]) -> dict:
@@ -389,9 +408,9 @@ def task4_eda(today_row: dict, historical_rows: list[dict]) -> dict:
     return {"task": "exploratory_data_analysis", "results": results}
 
 
-# ════════════════════════════════════════════════════════════════
+# ================================================================
 # 통합 실행
-# ════════════════════════════════════════════════════════════════
+# ================================================================
 
 def run_all_tasks(today_row: dict, historical_rows: list[dict]) -> dict:
     """
@@ -399,7 +418,7 @@ def run_all_tasks(today_row: dict, historical_rows: list[dict]) -> dict:
 
     Args:
         today_row:       build_daily_model_row()로 생성한 오늘 Daily Model Row
-        historical_rows: 최신→과거 순 Daily Model Row 리스트 (오늘 제외)
+        historical_rows: 최신->과거 순 Daily Model Row 리스트 (오늘 제외)
 
     Returns:
         {
@@ -408,7 +427,7 @@ def run_all_tasks(today_row: dict, historical_rows: list[dict]) -> dict:
             "attribute_correlation": {...},
             "eda":                   {...},
             "has_anomaly":           bool,
-            "anomaly_attrs":         [str],  # 이상 감지된 속성명 목록
+            "anomaly_attrs":         [str],
         }
     """
     trend   = task1_trend_analysis(today_row, historical_rows)
