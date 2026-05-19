@@ -87,7 +87,7 @@ jobs:
             --allow-unauthenticated
             --port=8001
             --memory=2Gi
-            --timeout=300
+            --timeout=3600
             --cpu=2
             --cpu-boost
             --min-instances=1

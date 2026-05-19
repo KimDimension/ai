@@ -8,10 +8,14 @@ AI 맞춤 질문 생성 에이전트 (2-LLM 파이프라인)
 
   분석결과(analytics_result)를 수치 계산 없이 LLM 추론에만 활용
   → 이상 탐지·추세 판단은 Python이 담당, Gemini는 임상 해석만 수행
+
+SSE 스트리밍:
+  generate_questions_stream() — async generator, 질문 하나씩 yield
 """
 import json
 import logging
 import re
+from typing import AsyncGenerator
 
 from vertexai.generative_models import GenerativeModel, GenerationConfig
 
@@ -222,9 +226,11 @@ def _generate_patient_questions(
     has_anomaly: bool,
     model: GenerativeModel,
     temperature: float = 0.5,
+    common_question_responses: list[dict] = None,
 ) -> list[dict]:
     """
     임상 쿼리 + RAG 결과 → 환자용 질문 3~5개 생성
+    common_question_responses: [{"question_text": str, "answer": str}, ...]
     """
     # RAG 블록
     rag_block = ""
@@ -248,6 +254,21 @@ def _generate_patient_questions(
         if parts:
             profile_block = "\n[환자 개인 프로필]\n" + "\n".join(parts) + "\n"
 
+    # 공통질문 답변 블록 (AI 질문 중복 방지 + 맥락 보강)
+    common_qa_block = ""
+    if common_question_responses:
+        lines = []
+        for item in common_question_responses:
+            q_text = item.get("question_text", "")
+            answer = item.get("answer", "미응답")
+            if q_text:
+                lines.append(f"  - {q_text} → {answer}")
+        if lines:
+            common_qa_block = (
+                "\n[환자가 이미 답변한 공통 질문 — AI 질문과 중복되지 않도록 참고]\n"
+                + "\n".join(lines) + "\n"
+            )
+
     # 이상 없을 때 루틴 힌트
     routine_block = ""
     if not has_anomaly:
@@ -261,7 +282,7 @@ def _generate_patient_questions(
 
     prompt = f"""당신은 CAPD(복막투석) 환자를 담당하는 의료 AI 어시스턴트입니다.
 아래 데이터를 종합해 의사가 환자에게 확인할 질문 3~5개를 생성하세요.
-{rag_block}{queries_block}{analytics_text}{profile_block}{routine_block}
+{rag_block}{queries_block}{analytics_text}{profile_block}{common_qa_block}{routine_block}
 [오늘 투석 기록]
 {json.dumps(record_data, ensure_ascii=False, indent=2)}
 
@@ -308,27 +329,30 @@ def _generate_patient_questions(
 def generate_ai_questions(
     record_data: dict,
     rejected_keys: list[str] = None,
-    kdigo_context: str = "",          # 하위 호환 — 미사용 시 자동 검색
-    historical_context: dict = None,  # 하위 호환 — analytics_result 없을 때 폴백용
+    kdigo_context: str = "",                      # 하위 호환 — 미사용 시 자동 검색
+    historical_context: dict = None,              # 하위 호환 — analytics_result 없을 때 폴백용
     patient_profile: dict = None,
-    analytics_result: dict = None,    # analytics.run_all_tasks() 결과
+    analytics_result: dict = None,                # analytics.run_all_tasks() 결과
+    common_question_responses: list[dict] = None, # 공통질문 답변 목록 (LLM2 맥락 보강)
 ) -> list[dict]:
     """
     2-LLM 파이프라인으로 AI 맞춤 질문 생성 (3~5개)
 
     Args:
-        record_data:        오늘 투석 기록 dict (exchange_records 포함 가능)
-        rejected_keys:      제외할 질문 패턴 목록
-        kdigo_context:      기존 단일 RAG 컨텍스트 (analytics_result 없을 때 사용)
-        historical_context: 기존 단순 집계 (analytics_result 없을 때 폴백)
-        patient_profile:    {"self_memo": str, "doctor_note": str}
-        analytics_result:   analytics.run_all_tasks() 결과 — 있으면 2-LLM 사용
+        record_data:                오늘 투석 기록 dict (exchange_records 포함 가능)
+        rejected_keys:              제외할 질문 패턴 목록
+        kdigo_context:              기존 단일 RAG 컨텍스트 (analytics_result 없을 때 사용)
+        historical_context:         기존 단순 집계 (analytics_result 없을 때 폴백)
+        patient_profile:            {"self_memo": str, "doctor_note": str}
+        analytics_result:           analytics.run_all_tasks() 결과 — 있으면 2-LLM 사용
+        common_question_responses:  [{"question_text": str, "answer": str}, ...]
 
     Returns:
         [{"question_text", "question_type", "options", "reason"}]
     """
-    rejected_keys   = rejected_keys or []
-    patient_profile = patient_profile or {}
+    rejected_keys              = rejected_keys or []
+    patient_profile            = patient_profile or {}
+    common_question_responses  = common_question_responses or []
 
     try:
         model = GenerativeModel(model_name=settings.GEMINI_MODEL)
@@ -336,7 +360,8 @@ def generate_ai_questions(
         # analytics_result 여부로 파이프라인 분기
         if analytics_result:
             return _pipeline_2llm(
-                record_data, rejected_keys, patient_profile, analytics_result, model
+                record_data, rejected_keys, patient_profile,
+                analytics_result, model, common_question_responses,
             )
         else:
             # analytics 없으면 기존 단일 LLM 방식 (하위 호환)
@@ -357,6 +382,7 @@ def _pipeline_2llm(
     patient_profile: dict,
     analytics_result: dict,
     model: GenerativeModel,
+    common_question_responses: list[dict] = None,
 ) -> list[dict]:
     """2-LLM 파이프라인 실행"""
     analytics_text = _format_analytics_for_prompt(analytics_result)
@@ -384,6 +410,7 @@ def _pipeline_2llm(
             record_data, analytics_text, clinical_queries,
             rag_context, rejected_keys, patient_profile,
             has_anomaly, model, temperature,
+            common_question_responses=common_question_responses or [],
         )
         if len(questions) > len(best):
             best = questions
@@ -401,6 +428,58 @@ def _pipeline_2llm(
         logger.info(f"2-LLM 파이프라인: 질문 {len(best)}개 생성 완료")
 
     return best
+
+
+# ════════════════════════════════════════════════════════════════
+# SSE 스트리밍 인터페이스
+# ════════════════════════════════════════════════════════════════
+
+async def generate_questions_stream(
+    record_data: dict,
+    rejected_keys: list[str] = None,
+    patient_profile: dict = None,
+    analytics_result: dict = None,
+    common_question_responses: list[dict] = None,
+) -> AsyncGenerator[dict, None]:
+    """
+    질문을 하나씩 yield하는 async generator (SSE 스트리밍용)
+
+    Args:
+        record_data:               오늘 투석 기록
+        rejected_keys:             제외할 질문 패턴
+        patient_profile:           {"self_memo": str, "doctor_note": str}
+        analytics_result:          analytics.run_all_tasks() 결과
+        common_question_responses: [{"question_text": str, "answer": str}, ...]
+
+    Yields:
+        {"question_text": str, "question_type": str, "options": list|None, "reason": str}
+    """
+    rejected_keys             = rejected_keys or []
+    patient_profile           = patient_profile or {}
+    common_question_responses = common_question_responses or []
+
+    try:
+        model = GenerativeModel(model_name=settings.GEMINI_MODEL)
+
+        if analytics_result:
+            questions = _pipeline_2llm(
+                record_data, rejected_keys, patient_profile,
+                analytics_result, model, common_question_responses,
+            )
+        else:
+            logger.info("generate_questions_stream: analytics_result 없음 — legacy 방식 사용")
+            questions = _pipeline_legacy(
+                record_data, rejected_keys, "",
+                None, patient_profile, model
+            )
+
+        for q in questions:
+            yield q
+
+    except Exception as e:
+        logger.error(f"generate_questions_stream 실패: {e}")
+        # 스트리밍 중 에러 발생 시 에러 dict yield
+        yield {"__error__": str(e)}
 
 
 def _pipeline_legacy(

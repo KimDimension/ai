@@ -10,15 +10,17 @@ backend 서버와 HTTP로 통신
      - ai_question_agent: 2-LLM 파이프라인
      - summary_agent: 분석 결과 기반 위험도 판단
 """
+import json
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ai.agents.summary_agent import generate_summary_and_triage
-from ai.agents.ai_question_agent import generate_ai_questions
+from ai.agents.ai_question_agent import generate_ai_questions, generate_questions_stream
 from ai.rag.retriever import search_kdigo_context, _get_model
 from ai.tools.data_engineering import build_daily_model_row
 from ai.tools.analytics import run_all_tasks
@@ -77,10 +79,19 @@ class AIQuestionsRequest(BaseModel):
     historical_context: dict = {}            # 기존 단순 집계 (하위 호환)
     patient_profile: dict = {}
     historical_records: list[dict] = []      # 과거 기록 raw 데이터
+    common_question_responses: list[dict] = []  # 공통질문 답변 (LLM2 맥락 보강)
 
 
 class AIQuestionsResponse(BaseModel):
     questions: list[dict]
+
+
+class AIQuestionsStreamRequest(BaseModel):
+    record_data: dict
+    rejected_keys: list[str] = []
+    patient_profile: dict = {}
+    historical_records: list[dict] = []
+    common_question_responses: list[dict] = []  # 공통질문 답변
 
 
 # ── 공통 유틸 ───────────────────────────────────────────────────
@@ -157,8 +168,54 @@ def generate_questions(body: AIQuestionsRequest):
         historical_context=body.historical_context or {},
         patient_profile=body.patient_profile or {},
         analytics_result=analytics_result,
+        common_question_responses=body.common_question_responses or [],
     )
     return AIQuestionsResponse(questions=questions)
+
+
+@app.post("/ai-questions/generate-stream")
+async def generate_questions_sse(body: AIQuestionsStreamRequest):
+    """
+    AI 추천 질문 SSE 스트리밍 엔드포인트
+    - 질문 하나 생성될 때마다 즉시 SSE 이벤트 전송
+    - 공통질문 답변(common_question_responses)을 LLM2 프롬프트에 주입
+    - 완료 시 event: done 전송
+    """
+    analytics_result = _compute_analytics(body.record_data, body.historical_records)
+
+    async def event_generator():
+        idx = 0
+        try:
+            async for question in generate_questions_stream(
+                record_data=body.record_data,
+                rejected_keys=[],
+                patient_profile=body.patient_profile or {},
+                analytics_result=analytics_result,
+                common_question_responses=body.common_question_responses or [],
+            ):
+                if "__error__" in question:
+                    error_data = json.dumps({"message": question["__error__"]}, ensure_ascii=False)
+                    yield f"event: error\ndata: {error_data}\n\n"
+                    return
+                data = json.dumps(question, ensure_ascii=False)
+                yield f"id: {idx}\ndata: {data}\n\n"
+                idx += 1
+        except Exception as e:
+            logger.error(f"SSE 이벤트 생성 실패: {e}")
+            error_data = json.dumps({"message": str(e)}, ensure_ascii=False)
+            yield f"event: error\ndata: {error_data}\n\n"
+            return
+        yield "event: done\ndata: {}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # ── 관리자 엔드포인트 ────────────────────────────────────────────
