@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi import Header, HTTPException
 from pydantic import BaseModel
 
 from ai.agents.summary_agent import generate_summary_and_triage
@@ -220,12 +221,20 @@ async def generate_questions_sse(body: AIQuestionsStreamRequest):
 
 # ── 관리자 엔드포인트 ────────────────────────────────────────────
 
+from ai.config import settings as ai_settings
+
 @app.post("/admin/ingest/medlineplus")
-def admin_ingest_medlineplus(force: bool = False):
+def admin_ingest_medlineplus(
+    force: bool = False,
+    x_admin_key: str = Header(..., alias="X-Admin-Key"),
+):
     """
-    MedlinePlus RAG 데이터 업데이트
+    MedlinePlus RAG 데이터 업데이트.
     GCP Cloud Scheduler가 매주 월요일 03:00 KST에 자동 호출.
+    호출 시 X-Admin-Key 헤더 필수 (ai/.env의 ADMIN_SECRET_KEY 값).
     """
+    if x_admin_key != ai_settings.ADMIN_SECRET_KEY:
+        raise HTTPException(status_code=403, detail="인증 실패")
     try:
         from ai.ingest.medlineplus import ingest
         ingest(force=force)

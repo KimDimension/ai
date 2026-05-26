@@ -20,6 +20,9 @@ class AISettings(BaseSettings):
     # Backend DB 연결 (RAG용) — 반드시 .env에 설정 (기본값 없음, 하드코딩 금지)
     DATABASE_URL: str
 
+    # 관리자 엔드포인트 인증 키 (/admin/ingest/* 보호용)
+    ADMIN_SECRET_KEY: str = ""
+
     class Config:
         env_file = ".env"
         extra = "allow"
