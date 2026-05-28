@@ -206,6 +206,13 @@ def generate_summary_and_triage(
 - A(Assessment): AI의 소견 및 위험도, 참고 지침
 - P(Plan): 권장 조치 사항
 
+⚠️ 언어 규칙 (절대 준수):
+- 모든 텍스트는 반드시 한국어로 작성합니다.
+- 의학 약어(UF, BP, HR, EMR, SOAP 등)는 허용하되, 설명은 한국어로 작성합니다.
+- S/O/A/P 항목 내용도 반드시 한국어 문장으로 작성합니다. 영어 문장 사용 금지.
+- 예시(O): "혈압 145/90 mmHg, UF volume 850 g, 체중 62.3 kg"
+- 예시(P): "혈압 조절 약물 용량 조정 검토 · 다음 방문 시 체중 및 UF 추이 재평가"
+
 [응답 형식 — 반드시 아래 JSON 구조로만 응답, 다른 텍스트 금지]
 {{
   "risk_level": "normal" | "caution" | "urgent",
