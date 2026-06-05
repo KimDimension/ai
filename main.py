@@ -233,7 +233,7 @@ def admin_ingest_medlineplus(
     GCP Cloud Scheduler가 매주 월요일 03:00 KST에 자동 호출.
     호출 시 X-Admin-Key 헤더 필수 (ai/.env의 ADMIN_SECRET_KEY 값).
     """
-    if x_admin_key != ai_settings.ADMIN_SECRET_KEY:
+    if not ai_settings.ADMIN_SECRET_KEY or x_admin_key != ai_settings.ADMIN_SECRET_KEY:
         raise HTTPException(status_code=403, detail="인증 실패")
     try:
         from ai.ingest.medlineplus import ingest

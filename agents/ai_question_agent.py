@@ -19,6 +19,7 @@ from typing import AsyncGenerator
 
 from vertexai.generative_models import GenerativeModel, GenerationConfig
 
+from ai.agents.common import get_gemini_model
 from ai.config import settings  # noqa: F401 — vertexai.init() 호출 포함
 from ai.rag.retriever import search_by_queries, search_kdigo_context
 
@@ -382,7 +383,7 @@ def generate_ai_questions(
     common_question_responses  = common_question_responses or []
 
     try:
-        model = GenerativeModel(model_name=settings.GEMINI_MODEL)
+        model = get_gemini_model()
 
         # analytics_result 여부로 파이프라인 분기
         if analytics_result:
@@ -486,7 +487,7 @@ async def generate_questions_stream(
     common_question_responses = common_question_responses or []
 
     try:
-        model = GenerativeModel(model_name=settings.GEMINI_MODEL)
+        model = get_gemini_model()
 
         if analytics_result:
             questions = _pipeline_2llm(

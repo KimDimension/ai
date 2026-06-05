@@ -7,8 +7,7 @@
 import json
 import logging
 
-from vertexai.generative_models import GenerativeModel, GenerationConfig
-
+from ai.agents.common import generate_with_retry, get_gemini_model
 from ai.config import settings  # noqa: F401 — vertexai.init() 호출 포함
 
 logger = logging.getLogger(__name__)
@@ -46,7 +45,7 @@ def generate_summary_and_triage(
         }
     """
     try:
-        model = GenerativeModel(model_name=settings.GEMINI_MODEL)
+        model = get_gemini_model()
 
         # 공통질문 응답 정리
         common_text = "없음"
@@ -226,23 +225,18 @@ def generate_summary_and_triage(
   "emr_soap": "S: ...\\nO: ...\\nA: ...\\nP: ..."
 }}"""
 
-        for attempt in range(MAX_RETRIES + 1):
-            try:
-                temperature = 0.2 if attempt == 0 else 0.4
-                response = model.generate_content(
-                    prompt,
-                    generation_config=GenerationConfig(
-                        temperature=temperature,
-                        max_output_tokens=8192,
-                        # response_mime_type 제거 — constrained JSON 모드가 출력을 truncate하는 원인
-                    ),
-                )
-                return _parse_summary_response(response.text)
-            except Exception as e:
-                if attempt < MAX_RETRIES:
-                    logger.warning(f"요약 생성 {attempt + 1}회차 실패, 재시도 중: {e}")
-                else:
-                    logger.error(f"요약/트리아지 {MAX_RETRIES + 1}회 모두 실패: {e}")
+        try:
+            raw_text = generate_with_retry(
+                model,
+                prompt,
+                temperature=0.2,
+                max_output_tokens=8192,
+                max_retries=MAX_RETRIES,
+                retry_temperature_delta=0.2,
+            )
+            return _parse_summary_response(raw_text)
+        except ValueError as e:
+            logger.error(f"요약/트리아지 {MAX_RETRIES + 1}회 모두 실패: {e}")
 
         return _fallback_triage(record_data)
 
