@@ -10,6 +10,7 @@ backend 서버와 HTTP로 통신
      - ai_question_agent: 2-LLM 파이프라인
      - summary_agent: 분석 결과 기반 위험도 판단
 """
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -182,7 +183,10 @@ async def generate_questions_sse(body: AIQuestionsStreamRequest):
     - 공통질문 답변(common_question_responses)을 LLM2 프롬프트에 주입
     - 완료 시 event: done 전송
     """
-    analytics_result = _compute_analytics(body.record_data, body.historical_records)
+    # _compute_analytics는 동기 블로킹(Gemini + CPU 연산) → 이벤트 루프 차단 방지
+    analytics_result = await asyncio.to_thread(
+        _compute_analytics, body.record_data, body.historical_records
+    )
 
     async def event_generator():
         idx = 0

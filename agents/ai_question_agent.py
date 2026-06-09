@@ -12,6 +12,7 @@ AI 맞춤 질문 생성 에이전트 (2-LLM 파이프라인)
 SSE 스트리밍:
   generate_questions_stream() — async generator, 질문 하나씩 yield
 """
+import asyncio
 import json
 import logging
 import re
@@ -489,16 +490,20 @@ async def generate_questions_stream(
     try:
         model = get_gemini_model()
 
+        # _pipeline_2llm / _pipeline_legacy 모두 동기 블로킹 (Gemini 호출 포함)
+        # → asyncio.to_thread로 이벤트 루프 차단 방지
         if analytics_result:
-            questions = _pipeline_2llm(
+            questions = await asyncio.to_thread(
+                _pipeline_2llm,
                 record_data, rejected_keys, patient_profile,
                 analytics_result, model, common_question_responses,
             )
         else:
             logger.info("generate_questions_stream: analytics_result 없음 — legacy 방식 사용")
-            questions = _pipeline_legacy(
+            questions = await asyncio.to_thread(
+                _pipeline_legacy,
                 record_data, rejected_keys, "",
-                None, patient_profile, model
+                None, patient_profile, model,
             )
 
         for q in questions:
