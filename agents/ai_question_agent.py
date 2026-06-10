@@ -49,6 +49,41 @@ def _strip_codeblock(text: str) -> str:
     return clean
 
 
+# 금지 표현 → 한국어 치환 사전 (LLM이 언어 규칙을 어길 때의 후처리 안전망)
+_KO_Q_REPLACEMENTS = [
+    (r'\bRAG\s*지침\s*(\[\s*\d+\s*\]\s*[,·]?\s*)+', 'KDIGO/ISPD 지침'),
+    (r'RAG\s*지침', 'KDIGO/ISPD 지침'),
+    (r'\[\s*\d+\s*\]', ''),
+    (r'\(?\s*(?i:mild_anomaly|strong_anomaly|mild\s*anomaly|strong\s*anomaly)\s*\)?', '이상 감지 기준을 벗어남'),
+    (r'(?i)\banomaly\b', '이상 소견'),
+    (r'(?i)\bultrafiltration\b', '제수량'),
+    (r'(?i)\bfluid\s*overload\b', '수분 과다'),
+    (r'(?i)\bfluid\s*management\b', '수분 관리'),
+    (r'(?i)\bfluid\s*status\b', '수분 상태'),
+]
+
+
+def _sanitize_q_ko(value):
+    """질문 텍스트·근거의 금지 영어/RAG/내부용어를 한국어로 후처리 치환"""
+    if not isinstance(value, str) or not value:
+        return value
+    out = value
+    for pat, repl in _KO_Q_REPLACEMENTS:
+        out = re.sub(pat, repl, out)
+    out = re.sub(r'[ \t]{2,}', ' ', out)
+    return out.strip()
+
+
+def _sanitize_question_obj(q: dict) -> dict:
+    """질문 dict의 question_text·reason 필드를 후처리 치환"""
+    if isinstance(q, dict):
+        if q.get("question_text"):
+            q["question_text"] = _sanitize_q_ko(q["question_text"])
+        if q.get("reason"):
+            q["reason"] = _sanitize_q_ko(q["reason"])
+    return q
+
+
 def _parse_questions(text: str) -> list[dict]:
     """
     Gemini 응답 → 질문 리스트 추출
@@ -60,9 +95,9 @@ def _parse_questions(text: str) -> list[dict]:
     try:
         data = json.loads(clean)
         if isinstance(data, list):
-            return [q for q in data if isinstance(q, dict) and "question_text" in q]
+            return [_sanitize_question_obj(q) for q in data if isinstance(q, dict) and "question_text" in q]
         if isinstance(data, dict) and "questions" in data:
-            return [q for q in data["questions"] if isinstance(q, dict) and "question_text" in q]
+            return [_sanitize_question_obj(q) for q in data["questions"] if isinstance(q, dict) and "question_text" in q]
     except json.JSONDecodeError:
         pass
 
@@ -73,7 +108,7 @@ def _parse_questions(text: str) -> list[dict]:
         try:
             obj = json.loads(m.group(0))
             if "question_text" in obj:
-                recovered.append(obj)
+                recovered.append(_sanitize_question_obj(obj))
         except json.JSONDecodeError:
             pass
     if recovered:
@@ -82,7 +117,7 @@ def _parse_questions(text: str) -> list[dict]:
     # 3차: regex로 question_text만 추출
     texts = re.findall(r'"question_text"\s*:\s*"((?:[^"\\]|\\.)*)"', clean)
     if texts:
-        return [{"question_text": t.replace('\\n', '\n'), "question_type": "yes_no"} for t in texts]
+        return [{"question_text": _sanitize_q_ko(t.replace('\\n', '\n')), "question_type": "yes_no"} for t in texts]
 
     return []
 
@@ -329,6 +364,16 @@ def _generate_patient_questions(
 - "더 나빠지고 있는 것 같지 않나요?" 등 예후를 부정적으로 암시하는 질문
 - 환자에게 수치심·죄책감을 유발할 수 있는 질문 (예: "식이요법을 제대로 지키셨나요?")
 - 위 유형에 해당하는 질문은 임상적 근거가 있더라도 생성하지 마세요
+
+[⚠️ 언어·표현 규칙 (절대 준수) — question_text·reason 모두 적용]
+- 모든 텍스트는 반드시 한국어로 작성합니다. 영어 단어·영어 문장 사용 금지.
+  · 금지 예시: "ultrafiltration", "fluid management", "fluid overload", "anomaly", "mild_anomaly"
+  · 한국어 표현: "제수량", "수분 관리", "수분 과다", "이상 소견"
+- RAG/지침 인용 표식("[1]", "[2]", "RAG 지침", "RAG 지침 [1], [2]에서") 절대 금지.
+  근거를 언급해야 하면 "KDIGO/ISPD 지침에 따르면" 형태로만 작성합니다.
+- 이상 탐지 알고리즘 용어("mild_anomaly", "strong anomaly", "(anomaly)") 절대 노출 금지 —
+  "이상 감지 기준을 벗어남" 식의 한국어 서술로만 작성합니다.
+- 환자에게 보이는 question_text는 의학 약어 없이 쉬운 한국어로 작성합니다.
 
 [응답 형식 — JSON 배열만 출력, 다른 텍스트 금지]
 [
@@ -586,6 +631,11 @@ def _pipeline_legacy(
 - 의사·병원·가족에 대한 불만이나 평가를 유도하는 질문
 - 예후를 부정적으로 암시하는 질문 (예: "더 나빠지고 있는 것 같지 않나요?")
 - 환자에게 수치심·죄책감을 유발할 수 있는 질문
+
+[⚠️ 언어·표현 규칙 (절대 준수) — question_text·reason 모두 적용]
+- 모든 텍스트는 반드시 한국어로 작성. 영어 단어·문장 금지 (예: "ultrafiltration"→"제수량", "fluid overload"→"수분 과다").
+- RAG/지침 인용 표식("[1]", "RAG 지침") 금지 — "KDIGO/ISPD 지침에 따르면" 형태로만.
+- 이상 탐지 용어("anomaly", "mild_anomaly") 노출 금지 — "이상 감지 기준을 벗어남" 식 한국어 서술로만.
 
 [응답 형식 — JSON 배열만]
 [

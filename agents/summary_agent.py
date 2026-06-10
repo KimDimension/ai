@@ -156,7 +156,7 @@ def generate_summary_and_triage(
 
         prompt = f"""당신은 CAPD(복막투석) 전문 의료 AI입니다.
 아래 환자 데이터와 의학 지침을 바탕으로 위험도 분류, 구조화된 임상 요약, EMR(SOAP)을 작성하세요.
-※ 요약과 EMR은 의사가 읽는 전문 문서입니다. 의학 용어(예: UF volume, peritonitis, hypertension, hyperglycemia, fluid overload, Kt/V 등)를 적극 사용하세요.
+※ 요약과 EMR은 의사가 읽는 전문 문서입니다. 임상 의학 개념을 정확히 반영하되 모든 서술은 한국어로 작성합니다.
 {analytics_block}{history_block}{patient_profile_block}{rag_block}
 [오늘 투석 기록]
 {json.dumps(record_data, ensure_ascii=False, indent=2)}
@@ -196,7 +196,7 @@ def generate_summary_and_triage(
 
 [keywords 작성 지침]
 - 이 기록을 대표하는 임상 키워드 2~5개
-- 영어 의학 용어 또는 한국어 혼용 가능 (예: "고혈압2도", "fluidOverload", "복막염의심")
+- 반드시 한국어 단어만 사용 (영어 키워드 절대 금지) — 예: "고혈압2도", "수분과다", "복막염의심", "제수량저하"
 - 해시태그 형식 아닌 단어만 (# 없이)
 
 [EMR SOAP 작성]
@@ -210,12 +210,19 @@ def generate_summary_and_triage(
 - 섹션 구분자는 정확히 대문자 한 글자 + 콜론 (S:, O:, A:, P:) 만 사용합니다.
 - "주관적:", "Subjective:", "S (Subjective):" 등 변형 표현 금지 — 반드시 "S:", "O:", "A:", "P:" 만 사용합니다.
 
-⚠️ 언어 규칙 (절대 준수):
-- 모든 텍스트는 반드시 한국어로 작성합니다.
-- 의학 약어(UF, BP, HR, EMR, SOAP 등)는 허용하되, 설명은 한국어로 작성합니다.
-- S/O/A/P 항목 내용도 반드시 한국어 문장으로 작성합니다. 영어 문장 사용 금지.
-- 예시(O): "혈압 145/90 mmHg, UF volume 850 g, 체중 62.3 kg"
-- 예시(P): "혈압 조절 약물 용량 조정 검토 · 다음 방문 시 체중 및 UF 추이 재평가"
+⚠️ 언어·표현 규칙 (절대 준수):
+- 모든 텍스트(findings·trend·action·keywords·emr_soap)는 반드시 한국어로 작성합니다. 영어 단어·영어 문장 사용 금지.
+- 의학 약어(BP, HR, EMR, SOAP 등)는 허용하되 반드시 한국어 병기 — 예: "UF(제수량)", "BP(혈압)". 단독 영어 표기 금지.
+  · 금지 예시: "UF volume", "fluid overload", "fluid status", "hydration status", "Stage 2 hypertension", "mild anomaly"
+  · 한국어 표현: "제수량", "수분 과다", "수분 상태", "고혈압 2도", "이상 감지 기준을 크게 벗어남"
+- 시스템 내부 라벨을 본문에 절대 포함 금지: "Risk Level", "caution 위험도", "위험도 분류: urgent", "위험도: caution" 등.
+  위험도는 risk_level JSON 필드로만 표현하고, findings/S/O/A/P 본문에는 "주의가 필요함", "즉각 개입이 필요함" 등 한국어 임상 서술로만 작성합니다.
+- 이상 탐지 알고리즘 용어("strong anomaly", "mild anomaly", "anomaly") 직접 인용 금지 — "이상 감지 기준을 크게/일부 벗어남" 식으로 풀어 씁니다.
+- RAG 인용 표식("[1]", "[2]", "RAG 지침", "RAG 지침 [1]에 따라") 절대 금지 — 근거 인용은 "KDIGO/ISPD 지침에 따르면" 형태로만 작성합니다.
+- S/O/A/P 항목 내용도 반드시 한국어 문장으로 작성합니다.
+- 예시(O): "혈압 145/90 mmHg, 제수량 850 g, 체중 62.3 kg"
+- 예시(A): "수축기 고혈압 2도로 주의가 필요함. KDIGO 지침의 혈압 조절 기준을 초과함."
+- 예시(P): "혈압 조절 약물 용량 조정 검토 · 다음 방문 시 체중 및 제수량 추이 재평가"
 
 [응답 형식 — 반드시 아래 JSON 구조로만 응답, 다른 텍스트 금지]
 {{
@@ -300,6 +307,48 @@ def _parse_summary_response(text: str) -> dict:
     raise ValueError(f"요약 JSON 완전 파싱 실패: {clean[:80]}")
 
 
+# 금지 표현 → 한국어 치환 사전 (LLM이 언어 규칙을 어길 때의 후처리 안전망)
+_KO_REPLACEMENTS = [
+    # RAG 인용 표식 제거
+    (r'\bRAG\s*지침\s*\[\s*\d+\s*\]', 'KDIGO/ISPD 지침'),
+    (r'RAG\s*지침', 'KDIGO/ISPD 지침'),
+    (r'\[\s*\d+\s*\]', ''),                       # [1], [2] 등 인용 번호 제거
+    # 시스템 내부 라벨 제거
+    (r'(?i)risk\s*level\s*[:：]?\s*(urgent|caution|normal)?', ''),
+    (r'위험도\s*분류\s*[:：]\s*(urgent|caution|normal)', '위험도 평가'),
+    (r'(urgent|caution|normal)\s*위험도', '위험도'),
+    # anomaly 알고리즘 용어
+    (r'(?i)strong\s*anomaly', '이상 감지 기준을 크게 벗어남'),
+    (r'(?i)mild\s*anomaly', '이상 감지 기준을 일부 벗어남'),
+    (r'(?i)\banomaly\b', '이상 소견'),
+    # 자주 노출되는 영어 임상 용어
+    (r'(?i)\bUF\s*volume\b', '제수량'),
+    (r'(?i)\bfluid\s*overload\b', '수분 과다'),
+    (r'(?i)\bfluid\s*status\b', '수분 상태'),
+    (r'(?i)\bhydration\s*status\b', '수분 상태'),
+    (r'(?i)\bultrafiltration\b', '제수량'),
+    (r'(?i)stage\s*2\s*hypertension', '고혈압 2도'),
+    (r'(?i)\bhypertension\b', '고혈압'),
+    (r'(?i)\bhyperglycemia\b', '고혈당'),
+    (r'(?i)\bhypotension\b', '저혈압'),
+    (r'(?i)\bperitonitis\b', '복막염'),
+]
+
+
+def _sanitize_ko(text):
+    """금지 영어·내부용어·RAG 표식을 한국어로 후처리 치환"""
+    if not isinstance(text, str) or not text:
+        return text
+    import re
+    out = text
+    for pat, repl in _KO_REPLACEMENTS:
+        out = re.sub(pat, repl, out)
+    # 치환으로 생긴 중복 공백 정리
+    out = re.sub(r'[ \t]{2,}', ' ', out)
+    out = re.sub(r'\(\s*\)', '', out)
+    return out.strip()
+
+
 def _validate_summary(data: dict) -> dict:
     """새 구조화 스키마 검증 및 정규화.
     findings / trend / action / keywords 필드를 ai_summary JSON 문자열로 직렬화하여 반환.
@@ -308,7 +357,7 @@ def _validate_summary(data: dict) -> dict:
     if data.get("risk_level") not in ("normal", "caution", "urgent"):
         data["risk_level"] = "caution"
 
-    # findings 정규화
+    # findings 정규화 (+ 후처리 치환)
     raw_findings = data.get("findings") or []
     findings = []
     for f in raw_findings:
@@ -316,22 +365,33 @@ def _validate_summary(data: dict) -> dict:
             sev = f.get("severity", "info")
             if sev not in ("critical", "warning", "info"):
                 sev = "info"
-            findings.append({"severity": sev, "text": f["text"]})
+            findings.append({"severity": sev, "text": _sanitize_ko(f["text"])})
     if not findings:
         findings = [{"severity": "info", "text": "특이 소견 없음"}]
+
+    # keywords 후처리 — 순수 영어(공백/기호 제외) 키워드는 제거
+    import re as _re
+    raw_keywords = data.get("keywords") or []
+    keywords = []
+    for kw in raw_keywords:
+        if not isinstance(kw, str):
+            continue
+        kw = _sanitize_ko(kw)
+        if kw and not _re.fullmatch(r'[A-Za-z0-9 /\-_.]+', kw):  # 한글이 하나라도 있어야 통과
+            keywords.append(kw)
 
     # 구조화 요약을 JSON 문자열로 직렬화 → ai_summary 필드에 저장
     structured = {
         "findings": findings,
-        "trend":    data.get("trend") or None,
-        "action":   data.get("action") or "특이 조치 사항 없음",
-        "keywords": data.get("keywords") or [],
+        "trend":    _sanitize_ko(data.get("trend")) or None,
+        "action":   _sanitize_ko(data.get("action")) or "특이 조치 사항 없음",
+        "keywords": keywords,
     }
 
     return {
         "risk_level": data.get("risk_level", "caution"),
         "ai_summary": json.dumps(structured, ensure_ascii=False),
-        "emr_soap":   data.get("emr_soap", ""),
+        "emr_soap":   _sanitize_ko(data.get("emr_soap", "")),
     }
 
 
