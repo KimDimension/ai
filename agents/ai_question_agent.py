@@ -12,7 +12,6 @@ AI 맞춤 질문 생성 에이전트 (2-LLM 파이프라인)
 SSE 스트리밍:
   generate_questions_stream() — async generator, 질문 하나씩 yield
 """
-import asyncio
 import json
 import logging
 import re
@@ -49,41 +48,6 @@ def _strip_codeblock(text: str) -> str:
     return clean
 
 
-# 금지 표현 → 한국어 치환 사전 (LLM이 언어 규칙을 어길 때의 후처리 안전망)
-_KO_Q_REPLACEMENTS = [
-    (r'\bRAG\s*지침\s*(\[\s*\d+\s*\]\s*[,·]?\s*)+', 'KDIGO/ISPD 지침'),
-    (r'RAG\s*지침', 'KDIGO/ISPD 지침'),
-    (r'\[\s*\d+\s*\]', ''),
-    (r'\(?\s*(?i:mild_anomaly|strong_anomaly|mild\s*anomaly|strong\s*anomaly)\s*\)?', '이상 감지 기준을 벗어남'),
-    (r'(?i)\banomaly\b', '이상 소견'),
-    (r'(?i)\bultrafiltration\b', '제수량'),
-    (r'(?i)\bfluid\s*overload\b', '수분 과다'),
-    (r'(?i)\bfluid\s*management\b', '수분 관리'),
-    (r'(?i)\bfluid\s*status\b', '수분 상태'),
-]
-
-
-def _sanitize_q_ko(value):
-    """질문 텍스트·근거의 금지 영어/RAG/내부용어를 한국어로 후처리 치환"""
-    if not isinstance(value, str) or not value:
-        return value
-    out = value
-    for pat, repl in _KO_Q_REPLACEMENTS:
-        out = re.sub(pat, repl, out)
-    out = re.sub(r'[ \t]{2,}', ' ', out)
-    return out.strip()
-
-
-def _sanitize_question_obj(q: dict) -> dict:
-    """질문 dict의 question_text·reason 필드를 후처리 치환"""
-    if isinstance(q, dict):
-        if q.get("question_text"):
-            q["question_text"] = _sanitize_q_ko(q["question_text"])
-        if q.get("reason"):
-            q["reason"] = _sanitize_q_ko(q["reason"])
-    return q
-
-
 def _parse_questions(text: str) -> list[dict]:
     """
     Gemini 응답 → 질문 리스트 추출
@@ -95,9 +59,9 @@ def _parse_questions(text: str) -> list[dict]:
     try:
         data = json.loads(clean)
         if isinstance(data, list):
-            return [_sanitize_question_obj(q) for q in data if isinstance(q, dict) and "question_text" in q]
+            return [q for q in data if isinstance(q, dict) and "question_text" in q]
         if isinstance(data, dict) and "questions" in data:
-            return [_sanitize_question_obj(q) for q in data["questions"] if isinstance(q, dict) and "question_text" in q]
+            return [q for q in data["questions"] if isinstance(q, dict) and "question_text" in q]
     except json.JSONDecodeError:
         pass
 
@@ -108,7 +72,7 @@ def _parse_questions(text: str) -> list[dict]:
         try:
             obj = json.loads(m.group(0))
             if "question_text" in obj:
-                recovered.append(_sanitize_question_obj(obj))
+                recovered.append(obj)
         except json.JSONDecodeError:
             pass
     if recovered:
@@ -117,7 +81,7 @@ def _parse_questions(text: str) -> list[dict]:
     # 3차: regex로 question_text만 추출
     texts = re.findall(r'"question_text"\s*:\s*"((?:[^"\\]|\\.)*)"', clean)
     if texts:
-        return [{"question_text": _sanitize_q_ko(t.replace('\\n', '\n')), "question_type": "yes_no"} for t in texts]
+        return [{"question_text": t.replace('\\n', '\n'), "question_type": "yes_no"} for t in texts]
 
     return []
 
@@ -253,7 +217,7 @@ Rules:
 # Step 3 — LLM 2: 환자용 질문 생성
 # ════════════════════════════════════════════════════════════════
 
-def _generate_patient_questions(
+def _build_patient_questions_prompt(
     record_data: dict,
     analytics_text: str,
     clinical_queries: list[str],
@@ -261,14 +225,9 @@ def _generate_patient_questions(
     rejected_keys: list[str],
     patient_profile: dict,
     has_anomaly: bool,
-    model: GenerativeModel,
-    temperature: float = 0.5,
     common_question_responses: list[dict] = None,
-) -> list[dict]:
-    """
-    임상 쿼리 + RAG 결과 → 환자용 질문 3~5개 생성
-    common_question_responses: [{"question_text": str, "answer": str}, ...]
-    """
+) -> str:
+    """LLM 2 프롬프트 빌드 (동기·스트리밍 공용)"""
     # RAG 블록
     rag_block = ""
     if rag_context:
@@ -291,7 +250,7 @@ def _generate_patient_questions(
         if parts:
             profile_block = "\n[환자 개인 프로필]\n" + "\n".join(parts) + "\n"
 
-    # 공통질문 답변 블록 (AI 질문 중복 방지 + 맥락 보강)
+    # 공통질문 답변 블록
     common_qa_block = ""
     if common_question_responses:
         lines = []
@@ -332,23 +291,32 @@ def _generate_patient_questions(
             + cats + "\n"
         )
 
-    rejected_str = ", ".join(rejected_keys) if rejected_keys else "없음"
+    # 거절 패턴 블록
+    if rejected_keys:
+        rejected_lines = "\n".join(f"  {i+1}. {p}" for i, p in enumerate(rejected_keys))
+        rejected_block = f"""
+[⛔ 의사가 이미 거절한 질문 — 아래 규칙을 반드시 준수]
+다음 질문들은 의사가 부적절하다고 판단해 거절한 것입니다.
+아래 질문 목록과 같은 임상 주제·의도·핵심 내용을 다루는 질문은
+표현·어미·단어·문장 구조가 달라져도 절대 생성하지 마세요.
+판단 기준: "환자가 이 질문에 답하면 거절된 질문에도 이미 답한 것이 되는가?" → 그렇다면 생성 금지.
 
-    prompt = f"""당신은 CAPD(복막투석) 환자를 담당하는 의료 AI 어시스턴트입니다.
+{rejected_lines}
+"""
+    else:
+        rejected_block = ""
+
+    return f"""당신은 CAPD(복막투석) 환자를 담당하는 의료 AI 어시스턴트입니다.
 아래 데이터를 종합해 의사가 환자에게 확인할 질문 3~5개를 생성하세요.
-{rag_block}{queries_block}{analytics_text}{profile_block}{common_qa_block}{record_fields_block}{routine_block}
+{rag_block}{queries_block}{analytics_text}{profile_block}{common_qa_block}{record_fields_block}{routine_block}{rejected_block}
 [오늘 투석 기록]
 {json.dumps(record_data, ensure_ascii=False, indent=2)}
-
-[제외할 패턴]
-{rejected_str}
 
 [질문 생성 규칙]
 - 반드시 3개 이상 5개 이하의 질문을 생성하세요 (이상 수치가 없어도 무조건 3개 이상)
 - 임상 소견과 RAG 지침을 기반으로 질문을 생성하세요
 - 과거 추세 이상이 있으면 추세 변화를 고려한 질문 포함
 - 환자가 이해하기 쉬운 한국어 표현 사용
-- 제외 패턴과 유사한 질문 금지
 - 질문 어미: "~나요?", "~셨나요?", "~인가요?" (금지: "~는지요?", "~었는지요?")
 - question_type: yes_no / single_select / multi_select / short_text
 - yes_no: options에 반드시 [긍정_답변, 부정_답변] 형태 (예: ["있었다","없었다"])
@@ -365,16 +333,6 @@ def _generate_patient_questions(
 - 환자에게 수치심·죄책감을 유발할 수 있는 질문 (예: "식이요법을 제대로 지키셨나요?")
 - 위 유형에 해당하는 질문은 임상적 근거가 있더라도 생성하지 마세요
 
-[⚠️ 언어·표현 규칙 (절대 준수) — question_text·reason 모두 적용]
-- 모든 텍스트는 반드시 한국어로 작성합니다. 영어 단어·영어 문장 사용 금지.
-  · 금지 예시: "ultrafiltration", "fluid management", "fluid overload", "anomaly", "mild_anomaly"
-  · 한국어 표현: "제수량", "수분 관리", "수분 과다", "이상 소견"
-- RAG/지침 인용 표식("[1]", "[2]", "RAG 지침", "RAG 지침 [1], [2]에서") 절대 금지.
-  근거를 언급해야 하면 "KDIGO/ISPD 지침에 따르면" 형태로만 작성합니다.
-- 이상 탐지 알고리즘 용어("mild_anomaly", "strong anomaly", "(anomaly)") 절대 노출 금지 —
-  "이상 감지 기준을 벗어남" 식의 한국어 서술로만 작성합니다.
-- 환자에게 보이는 question_text는 의학 약어 없이 쉬운 한국어로 작성합니다.
-
 [응답 형식 — JSON 배열만 출력, 다른 텍스트 금지]
 [
   {{
@@ -385,6 +343,25 @@ def _generate_patient_questions(
   }}
 ]"""
 
+
+def _generate_patient_questions(
+    record_data: dict,
+    analytics_text: str,
+    clinical_queries: list[str],
+    rag_context: str,
+    rejected_keys: list[str],
+    patient_profile: dict,
+    has_anomaly: bool,
+    model: GenerativeModel,
+    temperature: float = 0.5,
+    common_question_responses: list[dict] = None,
+) -> list[dict]:
+    """임상 쿼리 + RAG 결과 → 환자용 질문 3~5개 생성 (동기, 비스트리밍 경로용)"""
+    prompt = _build_patient_questions_prompt(
+        record_data, analytics_text, clinical_queries, rag_context,
+        rejected_keys, patient_profile, has_anomaly,
+        common_question_responses or [],
+    )
     try:
         resp = model.generate_content(
             prompt,
@@ -394,6 +371,69 @@ def _generate_patient_questions(
     except Exception as e:
         logger.warning(f"LLM 2 질문 생성 실패 (temperature={temperature}): {e}")
         return []
+
+
+async def _stream_patient_questions(
+    prompt: str,
+    model: GenerativeModel,
+    temperature: float = 0.5,
+) -> AsyncGenerator[dict, None]:
+    """
+    Gemini 스트리밍 API로 JSON 객체를 하나씩 실시간 파싱해서 yield.
+
+    Gemini는 JSON 배열 전체를 토큰 단위로 스트리밍 출력한다.
+    중괄호 깊이(brace depth)를 추적해서 완성된 `{...}` 객체가 나올 때마다 즉시 yield.
+    """
+    response = await model.generate_content_async(
+        prompt,
+        generation_config=GenerationConfig(temperature=temperature, max_output_tokens=4096),
+        stream=True,
+    )
+
+    buffer = ""
+    depth = 0
+    in_string = False
+    escape_next = False
+
+    async for chunk in response:
+        text = getattr(chunk, "text", "") or ""
+        for char in text:
+            # 이스케이프 처리
+            if escape_next:
+                escape_next = False
+                buffer += char
+                continue
+            if char == "\\" and in_string:
+                escape_next = True
+                buffer += char
+                continue
+            # 문자열 경계
+            if char == '"':
+                in_string = not in_string
+                buffer += char
+                continue
+            if in_string:
+                buffer += char
+                continue
+            # JSON 객체 추적
+            if char == "{":
+                depth += 1
+                buffer += char
+            elif char == "}":
+                buffer += char
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0:
+                        # 완성된 JSON 객체
+                        try:
+                            obj = json.loads(buffer)
+                            if isinstance(obj, dict) and "question_text" in obj:
+                                yield obj
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"스트리밍 JSON 파싱 실패: {e} | buf={buffer[:80]}")
+                        buffer = ""
+            else:
+                buffer += char
 
 
 # ════════════════════════════════════════════════════════════════
@@ -516,17 +556,17 @@ async def generate_questions_stream(
     common_question_responses: list[dict] = None,
 ) -> AsyncGenerator[dict, None]:
     """
-    질문을 하나씩 yield하는 async generator (SSE 스트리밍용)
+    Gemini 스트리밍으로 질문을 생성되는 즉시 하나씩 yield (SSE용).
 
-    Args:
-        record_data:               오늘 투석 기록
-        rejected_keys:             제외할 질문 패턴
-        patient_profile:           {"self_memo": str, "doctor_note": str}
-        analytics_result:          analytics.run_all_tasks() 결과
-        common_question_responses: [{"question_text": str, "answer": str}, ...]
+    Step 1 (LLM1 쿼리) + Step 2 (RAG) 는 동기로 실행 후,
+    Step 3 (LLM2) 는 generate_content_async(stream=True) 로 실행해
+    JSON 객체가 완성될 때마다 즉시 yield한다.
+
+    3개 미만이면 동기 재시도 후 새 질문을 추가로 yield.
 
     Yields:
         {"question_text": str, "question_type": str, "options": list|None, "reason": str}
+        {"__error__": str}  — 오류 시
     """
     rejected_keys             = rejected_keys or []
     patient_profile           = patient_profile or {}
@@ -535,30 +575,84 @@ async def generate_questions_stream(
     try:
         model = get_gemini_model()
 
-        # _pipeline_2llm / _pipeline_legacy 모두 동기 블로킹 (Gemini 호출 포함)
-        # → asyncio.to_thread로 이벤트 루프 차단 방지
-        if analytics_result:
-            questions = await asyncio.to_thread(
-                _pipeline_2llm,
-                record_data, rejected_keys, patient_profile,
-                analytics_result, model, common_question_responses,
-            )
-        else:
+        if not analytics_result:
+            # analytics 없으면 legacy 동기 방식 폴백
             logger.info("generate_questions_stream: analytics_result 없음 — legacy 방식 사용")
-            questions = await asyncio.to_thread(
-                _pipeline_legacy,
+            questions = _pipeline_legacy(
                 record_data, rejected_keys, "",
                 None, patient_profile, model,
             )
+            for q in questions:
+                yield q
+            return
 
-        for q in questions:
-            yield q
+        # ── Step 1: LLM 1 → 임상 쿼리 (동기) ──────────────────────
+        analytics_text = _format_analytics_for_prompt(analytics_result)
+        has_anomaly    = analytics_result.get("has_anomaly", False)
+
+        clinical_queries = _generate_clinical_queries(
+            record_data, analytics_text, patient_profile, model
+        )
+
+        # ── Step 2: RAG (동기) ─────────────────────────────────────
+        if clinical_queries:
+            rag_context = search_by_queries(clinical_queries, top_k=3)
+        else:
+            logger.warning("LLM 1 쿼리 생성 실패 — 단순 RAG 검색으로 폴백")
+            rag_context = search_kdigo_context(record_data)
+
+        # ── Step 3: LLM 2 스트리밍 ─────────────────────────────────
+        prompt = _build_patient_questions_prompt(
+            record_data, analytics_text, clinical_queries, rag_context,
+            rejected_keys, patient_profile, has_anomaly,
+            common_question_responses,
+        )
+
+        count = 0
+        yielded_texts: set[str] = set()
+        temperature = 0.5
+
+        # 1차 시도: 스트리밍
+        try:
+            async for q in _stream_patient_questions(prompt, model, temperature):
+                yield q
+                yielded_texts.add(q.get("question_text", ""))
+                count += 1
+                if count >= 5:
+                    break
+        except Exception as stream_err:
+            logger.warning(f"스트리밍 실패 — 동기 방식 폴백: {stream_err}")
+
+        # 3개 미만이면 동기 재시도 (최대 2회)
+        for attempt in range(2):
+            if count >= 3:
+                break
+            temperature = min(temperature + 0.15, 1.0)
+            logger.warning(f"스트리밍 {count}개 생성 — 동기 재시도 {attempt + 1}/2 (t={temperature:.2f})")
+            more = _generate_patient_questions(
+                record_data, analytics_text, clinical_queries, rag_context,
+                rejected_keys, patient_profile, has_anomaly, model, temperature,
+                common_question_responses,
+            )
+            for q in more:
+                if q.get("question_text") not in yielded_texts:
+                    yield q
+                    yielded_texts.add(q.get("question_text", ""))
+                    count += 1
+                    if count >= 5:
+                        break
+
+        if count == 0:
+            logger.error("generate_questions_stream: 질문 생성 완전 실패")
 
     except Exception as e:
         logger.error(f"generate_questions_stream 실패: {e}")
-        # 스트리밍 중 에러 발생 시 에러 dict yield
         yield {"__error__": str(e)}
 
+
+# ════════════════════════════════════════════════════════════════
+# Legacy 파이프라인 (analytics 없을 때 폴백)
+# ════════════════════════════════════════════════════════════════
 
 def _pipeline_legacy(
     record_data: dict,
@@ -568,95 +662,38 @@ def _pipeline_legacy(
     patient_profile: dict,
     model: GenerativeModel,
 ) -> list[dict]:
-    """
-    기존 단일 LLM 방식 (analytics_result 없을 때 하위 호환 폴백)
-    """
-    from ai.tools.record_analyzer import summarize_anomalies_text
-
-    rejected_str = ", ".join(rejected_keys) if rejected_keys else "없음"
-    anomaly_text = summarize_anomalies_text(record_data)
-
-    kdigo_block = f"\n[RAG 의학 지침]\n{kdigo_context}\n" if kdigo_context else ""
-
-    history_block = ""
-    if historical_context and historical_context.get("days", 0) >= 1:
-        h  = historical_context
-        bp = h.get("bp", {})
-        wt = h.get("weight", {})
-        uf = h.get("uf", {})
-        gl = h.get("glucose", {})
-        rs = h.get("risk_summary", {})
-        uf_weekly = ", ".join(str(v) for v in uf.get("weekly_avg", [])) or "데이터 없음"
-        history_block = f"""
-[최근 {h['days']}일 추세]
-- 혈압: 평균 {bp.get('avg','N/A')}, 추세: {bp.get('trend','N/A')}
-- 체중: 평균 {wt.get('avg','N/A')}kg, 최근 7일 변화 {wt.get('delta_7d','N/A')}kg
-- UF 주간 평균: {uf_weekly}, 추세: {uf.get('trend','N/A')}
-- 공복혈당: 평균 {gl.get('avg','N/A')} mg/dL
-- 위험도: 긴급 {rs.get('urgent',0)}회 / 주의 {rs.get('caution',0)}회
-"""
-
-    profile_block = ""
-    if patient_profile:
-        parts = []
-        if patient_profile.get("self_memo"):
-            parts.append(f"  - 환자 특이사항: {patient_profile['self_memo']}")
-        if patient_profile.get("doctor_note"):
-            parts.append(f"  - 의사 메모: {patient_profile['doctor_note']}")
-        if parts:
-            profile_block = "\n[환자 프로필]\n" + "\n".join(parts) + "\n"
-
-    routine_block = ""
-    if anomaly_text == "이상 수치 없음":
-        cats = "\n".join(f"  - {c}" for c in ROUTINE_CATEGORIES)
-        routine_block = f"\n[루틴 확인 카테고리]\n{cats}\n"
-
-    prompt = f"""당신은 CAPD 환자를 담당하는 의료 AI입니다.
-아래 데이터를 종합해 질문 3~5개를 생성하세요.
-{kdigo_block}{history_block}{profile_block}{routine_block}
-[오늘 투석 기록]
-{json.dumps(record_data, ensure_ascii=False, indent=2)}
-
-[이상 수치]
-{anomaly_text}
-
-[제외 패턴]
-{rejected_str}
-
-[⛔ 절대 생성 금지 질문 유형 — 윤리·환자 안전]
-- 가족 사망·이혼·별거·가정불화 등 개인 생활사 관련 질문
-- 정신 건강 직접 진단형 질문 (예: "우울하신가요?", "불안하거나 절망감이 드시나요?")
-- 경제적 상황·치료비 부담을 묻는 질문
-- 종교·신앙·신념 관련 질문
-- 의사·병원·가족에 대한 불만이나 평가를 유도하는 질문
-- 예후를 부정적으로 암시하는 질문 (예: "더 나빠지고 있는 것 같지 않나요?")
-- 환자에게 수치심·죄책감을 유발할 수 있는 질문
-
-[⚠️ 언어·표현 규칙 (절대 준수) — question_text·reason 모두 적용]
-- 모든 텍스트는 반드시 한국어로 작성. 영어 단어·문장 금지 (예: "ultrafiltration"→"제수량", "fluid overload"→"수분 과다").
-- RAG/지침 인용 표식("[1]", "RAG 지침") 금지 — "KDIGO/ISPD 지침에 따르면" 형태로만.
-- 이상 탐지 용어("anomaly", "mild_anomaly") 노출 금지 — "이상 감지 기준을 벗어남" 식 한국어 서술로만.
-
-[응답 형식 — JSON 배열만]
-[
-  {{"question_text":"질문","question_type":"yes_no","options":["있었다","없었다"],"reason":"근거"}}
-]"""
+    """기존 단일 LLM 방식 — analytics_result 없을 때 폴백"""
+    if not kdigo_context:
+        kdigo_context = search_kdigo_context(record_data)
 
     best: list[dict] = []
     temperature = 0.5
+
     for attempt in range(3):
-        try:
-            resp = model.generate_content(
-                prompt,
-                generation_config=GenerationConfig(temperature=temperature, max_output_tokens=4096),
-            )
-            questions = _parse_questions(resp.text)
-            if len(questions) > len(best):
-                best = questions
-            if len(best) >= 3:
-                break
-            temperature = min(temperature + 0.15, 1.0)
-        except Exception as e:
-            logger.warning(f"legacy 질문 생성 실패 (attempt {attempt + 1}): {e}")
+        questions = _generate_patient_questions(
+            record_data=record_data,
+            analytics_text="",
+            clinical_queries=[],
+            rag_context=kdigo_context,
+            rejected_keys=rejected_keys,
+            patient_profile=patient_profile,
+            has_anomaly=False,
+            model=model,
+            temperature=temperature,
+        )
+        if len(questions) > len(best):
+            best = questions
+        if len(best) >= 3:
+            break
+        temperature = min(temperature + 0.15, 1.0)
+        logger.warning(
+            f"legacy 질문 {len(questions)}개 생성 (시도 {attempt + 1}/3), "
+            f"재시도 temperature={temperature:.2f}"
+        )
+
+    if not best:
+        logger.error("legacy 파이프라인: 질문 생성 완전 실패")
+    else:
+        logger.info(f"legacy 파이프라인: 질문 {len(best)}개 생성 완료")
 
     return best
